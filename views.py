@@ -1,7 +1,7 @@
 import csv
 import io
 import discord
-from database import add_activity, approve_evidence, calc_puntos_totales, get_all_scouts, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
+from database import add_activity, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
 from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR
 from permissions import can_review_evidence, is_admin
 
@@ -50,16 +50,138 @@ class RankingButton(discord.ui.Button):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class PointsSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        for key, meta in ACTIVIDADES.items():
+            self.add_item(PointsActivityButton(key, meta))
+
+
+class PointsActivityButton(discord.ui.Button):
+    def __init__(self, key: str, meta: dict):
+        points_config = {activity: points for activity, points in get_all_config()}
+        super().__init__(
+            label=f"{meta['label']} ({points_config.get(key, 0)} pts)",
+            emoji=meta["emoji"],
+            style=discord.ButtonStyle.secondary,
+        )
+        self.key = key
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(PointsValueModal(self.key))
+
+
+class PointsValueModal(discord.ui.Modal):
+    puntos = discord.ui.TextInput(
+        label="Nuevos puntos",
+        placeholder="Ej: 5",
+        max_length=4,
+    )
+
+    def __init__(self, actividad_key: str):
+        meta = ACTIVIDADES[actividad_key]
+        super().__init__(title=f"{meta['emoji']} {meta['label']} — nuevo valor")
+        self.actividad_key = actividad_key
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.puntos.value).strip())
+            if amount < 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ Ingresa un número válido mayor a 0.", ephemeral=True)
+            return
+
+        set_puntos(self.actividad_key, amount)
+        meta = ACTIVIDADES[self.actividad_key]
+        embed = discord.Embed(
+            description=f"{meta['emoji']} **{meta['label']}** ahora vale **{amount} pts**.",
+            color=COLOR_SUCCESS
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await refresh_dashboard_message(interaction)
+
+
+# ── Sumar / Restar: selección de actividad ────────────────────────────────────
+
+class ActivitySelectView(discord.ui.View):
+    def __init__(self, action: str):
+        """action: 'sumar' | 'restar'"""
+        super().__init__(timeout=60)
+        self.action = action
+        for key, meta in ACTIVIDADES.items():
+            self.add_item(ActivitySelectButton(key, meta, action))
+
+
+class ActivitySelectButton(discord.ui.Button):
+    def __init__(self, key: str, meta: dict, action: str):
+        style = discord.ButtonStyle.success if action == "sumar" else discord.ButtonStyle.danger
+        super().__init__(
+            label=meta["label"],
+            emoji=meta["emoji"],
+            style=style,
+        )
+        self.key = key
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ActivityValueModal(self.key, self.action))
+
+
+class ActivityValueModal(discord.ui.Modal):
+    user_id  = discord.ui.TextInput(label="User ID del scout", placeholder="Clic derecho → Copiar ID de usuario")
+    cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 1", max_length=4)
+
+    def __init__(self, actividad_key: str, action: str):
+        meta = ACTIVIDADES[actividad_key]
+        verb = "Sumar" if action == "sumar" else "Restar"
+        super().__init__(title=f"{verb} — {meta['emoji']} {meta['label']}")
+        self.actividad_key = actividad_key
+        self.action = action
+
+    async def on_submit(self, interaction: discord.Interaction):
+        uid = str(self.user_id.value).strip()
+        try:
+            amount = int(str(self.cantidad.value).strip())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ Cantidad inválida.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(int(uid)) if uid.isdigit() else None
+        username = member.display_name if member else uid
+        meta = ACTIVIDADES[self.actividad_key]
+
+        if self.action == "sumar":
+            pts = add_activity(uid, username, self.actividad_key, amount)
+            embed = discord.Embed(
+                description=f"✅ **+{amount}** {meta['emoji']} {meta['label']} a **{username}**  →  `+{pts} pts`",
+                color=COLOR_SUCCESS
+            )
+        else:
+            pts = subtract_activity(uid, username, self.actividad_key, amount)
+            embed = discord.Embed(
+                description=f"✅ **-{amount}** {meta['emoji']} {meta['label']} a **{username}**  →  `-{pts} pts`",
+                color=COLOR_ERROR
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await refresh_dashboard_message(interaction)
+
+
+# ── DashboardView actualizado ─────────────────────────────────────────────────
+
 class DashboardView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Ranking", style=discord.ButtonStyle.secondary, custom_id="dash_ranking")
+    @discord.ui.button(label="Ranking", style=discord.ButtonStyle.secondary, custom_id="dash_ranking", row=0)
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
         from embeds import build_ranking_embed
         await interaction.response.send_message(embed=build_ranking_embed(), ephemeral=True)
 
-    @discord.ui.button(label="Mi perfil", style=discord.ButtonStyle.secondary, custom_id="dash_profile")
+    @discord.ui.button(label="Mi perfil", style=discord.ButtonStyle.secondary, custom_id="dash_profile", row=0)
     async def profile(self, interaction: discord.Interaction, button: discord.ui.Button):
         from embeds import build_perfil_embed
         await interaction.response.send_message(
@@ -67,31 +189,46 @@ class DashboardView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="Puntos", style=discord.ButtonStyle.primary, custom_id="dash_points")
+    @discord.ui.button(label="Config pts", style=discord.ButtonStyle.primary, custom_id="dash_points", row=0)
     async def points(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            await interaction.response.send_message("❌ Sin permiso.", ephemeral=True)
             return
-        await interaction.response.send_modal(PointsModal())
+        embed = discord.Embed(
+            title="⚙️ Configurar puntos",
+            description="Elige la actividad que quieres modificar:",
+            color=COLOR_PANEL
+        )
+        await interaction.response.send_message(embed=embed, view=PointsSelectView(), ephemeral=True)
 
-    @discord.ui.button(label="Sumar", style=discord.ButtonStyle.success, custom_id="dash_add")
+    @discord.ui.button(label="Sumar", style=discord.ButtonStyle.success, custom_id="dash_add", row=0)
     async def add(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            await interaction.response.send_message("❌ Sin permiso.", ephemeral=True)
             return
-        await interaction.response.send_modal(ActivityModal("sumar"))
+        embed = discord.Embed(
+            title="➕ Sumar actividad",
+            description="Elige la actividad a sumar:",
+            color=COLOR_SUCCESS
+        )
+        await interaction.response.send_message(embed=embed, view=ActivitySelectView("sumar"), ephemeral=True)
 
-    @discord.ui.button(label="Restar", style=discord.ButtonStyle.danger, custom_id="dash_subtract")
+    @discord.ui.button(label="Restar", style=discord.ButtonStyle.danger, custom_id="dash_subtract", row=0)
     async def subtract(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            await interaction.response.send_message("❌ Sin permiso.", ephemeral=True)
             return
-        await interaction.response.send_modal(ActivityModal("restar"))
+        embed = discord.Embed(
+            title="➖ Restar actividad",
+            description="Elige la actividad a restar:",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, view=ActivitySelectView("restar"), ephemeral=True)
 
-    @discord.ui.button(label="Exportar", style=discord.ButtonStyle.secondary, custom_id="dash_export")
+    @discord.ui.button(label="Exportar", style=discord.ButtonStyle.secondary, custom_id="dash_export", row=1)
     async def export(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            await interaction.response.send_message("❌ Sin permiso.", ephemeral=True)
             return
         output = io.StringIO()
         writer = csv.writer(output)
@@ -104,74 +241,17 @@ class DashboardView(discord.ui.View):
         file = discord.File(fp=io.BytesIO(output.getvalue().encode()), filename="scouts_export.csv")
         await interaction.response.send_message(file=file, ephemeral=True)
 
-    @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger, custom_id="dash_reset")
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger, custom_id="dash_reset", row=1)
     async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            await interaction.response.send_message("❌ Sin permiso.", ephemeral=True)
             return
         embed = discord.Embed(
-            title="Confirmar reset",
-            description="Esto borra todos los conteos de scouts.",
+            title="⚠️ Confirmar reset",
+            description="Esto borra **todos** los conteos de scouts. Esta acción no se puede deshacer.",
             color=COLOR_ERROR
         )
         await interaction.response.send_message(embed=embed, view=ResetView(), ephemeral=True)
-
-
-class PointsModal(discord.ui.Modal, title="Configurar puntos"):
-    actividad = discord.ui.TextInput(label="Actividad", placeholder="kill_scout, kill_pelea, limpieza_aspecto, scouteo, mapeo")
-    puntos = discord.ui.TextInput(label="Puntos", placeholder="Ej: 3")
-
-    async def on_submit(self, interaction: discord.Interaction):
-        key = str(self.actividad.value).strip()
-        if key not in ACTIVIDADES:
-            await interaction.response.send_message("Actividad invalida.", ephemeral=True)
-            return
-        try:
-            amount = int(str(self.puntos.value).strip())
-        except ValueError:
-            await interaction.response.send_message("Puntos invalidos.", ephemeral=True)
-            return
-        set_puntos(key, amount)
-        await refresh_dashboard_message(interaction)
-        await interaction.response.send_message(f"{ACTIVIDADES[key]['label']} ahora vale {amount} pts.", ephemeral=True)
-
-
-class ActivityModal(discord.ui.Modal):
-    user_id = discord.ui.TextInput(label="User ID", placeholder="ID del usuario")
-    actividad = discord.ui.TextInput(label="Actividad", placeholder="kill_scout, kill_pelea, limpieza_aspecto, scouteo, mapeo")
-    cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 1")
-
-    def __init__(self, action: str):
-        super().__init__(title="Sumar actividad" if action == "sumar" else "Restar actividad")
-        self.action = action
-
-    async def on_submit(self, interaction: discord.Interaction):
-        user_id = str(self.user_id.value).strip()
-        key = str(self.actividad.value).strip()
-        if key not in ACTIVIDADES:
-            await interaction.response.send_message("Actividad invalida.", ephemeral=True)
-            return
-        try:
-            amount = int(str(self.cantidad.value).strip())
-        except ValueError:
-            await interaction.response.send_message("Cantidad invalida.", ephemeral=True)
-            return
-        member = interaction.guild.get_member(int(user_id)) if user_id.isdigit() else None
-        username = member.display_name if member else user_id
-        if self.action == "sumar":
-            pts = add_activity(user_id, username, key, amount)
-            msg = f"Sumado {amount} {ACTIVIDADES[key]['label']} a {username} (+{pts} pts)."
-        else:
-            pts = subtract_activity(user_id, username, key, amount)
-            msg = f"Restado {amount} {ACTIVIDADES[key]['label']} a {username} (-{pts} pts)."
-        await refresh_dashboard_message(interaction)
-        await interaction.response.send_message(msg, ephemeral=True)
-
-
-async def refresh_dashboard_message(interaction: discord.Interaction):
-    from embeds import build_dashboard_embed
-    if interaction.message and interaction.message.embeds and interaction.message.embeds[0].title == "Dashboard Scouts":
-        await interaction.message.edit(embed=build_dashboard_embed(), view=DashboardView())
 
 
 # ── Confirmación de Reset ─────────────────────────────────────────────────────
