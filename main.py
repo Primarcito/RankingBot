@@ -135,7 +135,8 @@ async def on_message(message: discord.Message):
     await analyzing_msg.delete()
 
     try:
-        await message.add_reaction("⏳")
+        await message.clear_reaction("?")
+        await message.add_reaction("??")
     except discord.HTTPException:
         pass
 
