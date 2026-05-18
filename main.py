@@ -11,7 +11,7 @@ from database import init_db, get_all_scouts, calc_puntos_totales, get_nivel, \
     add_activity, subtract_activity, set_puntos, get_puntos, ensure_scout, COLS, \
     create_evidence_review, get_pending_evidence_message_ids, set_evidence_review_message
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
-    EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
+    EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
 from views import EvidenceReviewView, PanelView, ResetView
 from embeds import build_panel_embed, build_ranking_embed, build_perfil_embed
 from permissions import is_admin
@@ -124,9 +124,11 @@ async def on_message(message: discord.Message):
 
 def get_evidence_activity(message: discord.Message):
     category = message.channel.category
-    if EVIDENCE_CATEGORY_ID and (not category or category.id != EVIDENCE_CATEGORY_ID):
+    if EVIDENCE_CATEGORY_IDS and (not category or category.id not in EVIDENCE_CATEGORY_IDS):
         return None
-    if not EVIDENCE_CATEGORY_ID and (not category or category.name.lower() != EVIDENCE_CATEGORY):
+    if not EVIDENCE_CATEGORY_IDS and EVIDENCE_CATEGORY_ID and (not category or category.id != EVIDENCE_CATEGORY_ID):
+        return None
+    if not EVIDENCE_CATEGORY_IDS and not EVIDENCE_CATEGORY_ID and (not category or category.name.lower() != EVIDENCE_CATEGORY):
         return None
 
     channel_name = clean_channel_name(message.channel.name)
