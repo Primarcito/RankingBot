@@ -206,7 +206,7 @@ async def dashboard_scouts(interaction: discord.Interaction):
     embed = build_dashboard_embed()
     dashboard_msg = None
     async for msg in channel.history(limit=20):
-        if msg.author.id == bot.user.id and msg.embeds and msg.embeds[0].title == "Dashboard Scouts":
+        if msg.author.id == bot.user.id and msg.embeds and "Dashboard Scouts" in (msg.embeds[0].title or ""):
             dashboard_msg = msg
             break
 

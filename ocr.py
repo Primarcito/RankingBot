@@ -26,7 +26,13 @@ async def read_message_ocr(message):
         image = Image.open(io.BytesIO(data)).convert("RGB")
         image = ImageOps.grayscale(image)
         image = ImageOps.autocontrast(image)
-        text = await asyncio.to_thread(pytesseract.image_to_string, image, lang=OCR_LANG)
+        image = image.point(lambda x: 0 if x < 140 else 255, "1")
+        text = await asyncio.to_thread(
+            pytesseract.image_to_string,
+            image,
+            lang=OCR_LANG,
+            config="--psm 6",
+        )
         if text.strip():
             texts.append(text.strip())
 
