@@ -74,9 +74,20 @@ class EvidenceReviewView(discord.ui.View):
     def __init__(self, evidence_message_id: str):
         super().__init__(timeout=None)
         self.evidence_message_id = evidence_message_id
+        self.add_item(EvidenceApproveButton(evidence_message_id))
+        self.add_item(EvidenceRejectButton(evidence_message_id))
 
-    @discord.ui.button(label="Aprobar", style=discord.ButtonStyle.success, custom_id="evidence_approve")
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class EvidenceApproveButton(discord.ui.Button):
+    def __init__(self, evidence_message_id: str):
+        super().__init__(
+            label="Aprobar",
+            style=discord.ButtonStyle.success,
+            custom_id=f"evidence_approve:{evidence_message_id}"
+        )
+        self.evidence_message_id = evidence_message_id
+
+    async def callback(self, interaction: discord.Interaction):
         if not can_review_evidence(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
@@ -91,8 +102,17 @@ class EvidenceReviewView(discord.ui.View):
         embed.add_field(name="Estado", value=f"Aprobado por {interaction.user.mention}", inline=False)
         await interaction.response.edit_message(embed=embed, view=None)
 
-    @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger, custom_id="evidence_reject")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class EvidenceRejectButton(discord.ui.Button):
+    def __init__(self, evidence_message_id: str):
+        super().__init__(
+            label="Rechazar",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"evidence_reject:{evidence_message_id}"
+        )
+        self.evidence_message_id = evidence_message_id
+
+    async def callback(self, interaction: discord.Interaction):
         if not can_review_evidence(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return

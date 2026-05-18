@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from database import init_db, get_all_scouts, calc_puntos_totales, get_nivel, \
     add_activity, subtract_activity, set_puntos, get_puntos, ensure_scout, COLS, \
-    create_evidence_review, set_evidence_review_message
+    create_evidence_review, get_pending_evidence_message_ids, set_evidence_review_message
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
 from views import EvidenceReviewView, PanelView, ResetView
@@ -38,6 +38,8 @@ ACT_CHOICES = [
 async def on_ready():
     init_db()
     bot.add_view(PanelView())   # re-registrar vista persistente tras reinicio
+    for message_id in get_pending_evidence_message_ids():
+        bot.add_view(EvidenceReviewView(message_id))
     await tree.sync()
     print(f"✅ Bot listo: {bot.user} | Comandos sincronizados")
 
@@ -78,7 +80,7 @@ async def on_message(message: discord.Message):
     if pts <= 0:
         return
 
-    review_channel = bot.get_channel(EVIDENCE_REVIEW_CHANNEL_ID) or message.channel
+    review_channel = await get_review_channel(message)
     embed = discord.Embed(
         title="Evidencia pendiente",
         color=COLOR_WARNING,
@@ -150,6 +152,17 @@ def first_image_url(message: discord.Message):
         if content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS):
             return attachment.url
     return None
+
+async def get_review_channel(message: discord.Message):
+    if EVIDENCE_REVIEW_CHANNEL_ID:
+        channel = bot.get_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+        if channel:
+            return channel
+        try:
+            return await bot.fetch_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+        except discord.HTTPException:
+            pass
+    return message.channel
 
 @tree.command(name="panel_scouts", description="Muestra el panel de registro de actividades")
 async def panel_scouts(interaction: discord.Interaction):

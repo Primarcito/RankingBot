@@ -105,29 +105,6 @@ def add_activity(user_id: str, username: str, actividad: str, cantidad: int):
         conn.commit()
     return total_puntos
 
-def add_evidence_activity(message_id: str, user_id: str, username: str, actividad: str):
-    ensure_scout(user_id, username)
-    puntos_unit = get_puntos(actividad)
-    fecha = datetime.utcnow().isoformat()
-    with get_conn() as conn:
-        try:
-            conn.execute(
-                "INSERT INTO evidence_messages (message_id, user_id, actividad, puntos, fecha) VALUES (?,?,?,?,?)",
-                (message_id, user_id, actividad, puntos_unit, fecha)
-            )
-        except sqlite3.IntegrityError:
-            return 0
-        conn.execute(
-            f"UPDATE scouts SET {actividad} = {actividad} + 1 WHERE user_id=?",
-            (user_id,)
-        )
-        conn.execute(
-            "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-            (user_id, username, actividad, 1, puntos_unit, fecha, "evidencia")
-        )
-        conn.commit()
-    return puntos_unit
-
 def create_evidence_review(message_id: str, user_id: str, username: str, actividad: str):
     ensure_scout(user_id, username)
     puntos_unit = get_puntos(actividad)
@@ -150,6 +127,13 @@ def set_evidence_review_message(message_id: str, review_message_id: str):
             (review_message_id, message_id)
         )
         conn.commit()
+
+def get_pending_evidence_message_ids():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT message_id FROM evidence_messages WHERE status='pending'"
+        ).fetchall()
+    return [row[0] for row in rows]
 
 def approve_evidence(message_id: str):
     with get_conn() as conn:

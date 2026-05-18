@@ -43,7 +43,7 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
 OCR_ENABLED = True
 OCR_MAX_IMAGES = 1
-OCR_LANG = "spa+eng"
+OCR_LANG = "eng"
 OCR_RULES = {
     "kill_persona": [
         "has matado a",

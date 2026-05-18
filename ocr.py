@@ -1,5 +1,7 @@
 import io
 import re
+import asyncio
+import unicodedata
 
 from PIL import Image, ImageOps
 import pytesseract
@@ -19,7 +21,7 @@ async def read_message_ocr(message):
         image = Image.open(io.BytesIO(data)).convert("RGB")
         image = ImageOps.grayscale(image)
         image = ImageOps.autocontrast(image)
-        text = pytesseract.image_to_string(image, lang=OCR_LANG)
+        text = await asyncio.to_thread(pytesseract.image_to_string, image, lang=OCR_LANG)
         if text.strip():
             texts.append(text.strip())
 
@@ -45,6 +47,8 @@ def suggest_activity_from_ocr(text):
 
 def normalize_text(text):
     text = text.lower()
-    text = re.sub(r"[^a-z0-9áéíóúñü ]+", " ", text)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
