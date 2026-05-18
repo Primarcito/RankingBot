@@ -1,7 +1,10 @@
+import os
 import sqlite3
 from datetime import datetime
 
-DB_PATH = "scouts.db"
+DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "scouts.db")
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
