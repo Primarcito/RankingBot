@@ -1,6 +1,7 @@
 import os
 import csv
 import io
+import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -50,11 +51,15 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
+    print(f"[MSG] guild={message.guild.id} channel={message.channel.id} category={message.channel.category_id} attachments={len(message.attachments)}")
+
     actividad = get_evidence_activity(message)
     if not actividad:
+        print("[EVIDENCE] ignorado: canal/categoria no coincide")
         return
 
     if not has_image(message) and not message.content.strip():
+        print("[EVIDENCE] ignorado: sin imagen/texto")
         return
 
     ocr_text = ""
@@ -67,6 +72,7 @@ async def on_message(message: discord.Message):
             ocr_activity, ocr_hits, ocr_confidence = suggest_activity_from_ocr(ocr_text)
         except Exception as err:
             ocr_text = f"OCR error: {err}"
+            print(f"[OCR ERROR] {err}")
 
     if ocr_activity:
         actividad = ocr_activity
@@ -78,6 +84,7 @@ async def on_message(message: discord.Message):
         actividad
     )
     if pts <= 0:
+        print("[EVIDENCE] duplicado")
         return
 
     review_channel = await get_review_channel(message)
@@ -108,6 +115,7 @@ async def on_message(message: discord.Message):
         view=EvidenceReviewView(str(message.id))
     )
     set_evidence_review_message(str(message.id), str(review_msg.id))
+    print(f"[EVIDENCE] enviado review={review_msg.id}")
 
     try:
         await message.add_reaction("⏳")
