@@ -2,11 +2,16 @@ import io
 import re
 import asyncio
 import unicodedata
+import shutil
 
 from PIL import Image, ImageOps
 import pytesseract
 
 from config import OCR_LANG, OCR_MAX_IMAGES, OCR_RULES
+
+TESSERACT_CMD = shutil.which("tesseract")
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
 async def read_message_ocr(message):
