@@ -101,7 +101,7 @@ class EvidenceApproveButton(discord.ui.Button):
         embed.color = COLOR_SUCCESS
         embed.add_field(name="Estado", value=f"Aprobado por {interaction.user.mention}", inline=False)
         await interaction.response.edit_message(embed=embed, view=None)
-        await set_source_reaction(interaction, "✅")
+        await set_source_reaction(interaction, "\N{WHITE HEAVY CHECK MARK}")
 
 
 class EvidenceRejectButton(discord.ui.Button):
@@ -126,7 +126,7 @@ class EvidenceRejectButton(discord.ui.Button):
         embed.color = COLOR_ERROR
         embed.add_field(name="Estado", value=f"Rechazado por {interaction.user.mention}", inline=False)
         await interaction.response.edit_message(embed=embed, view=None)
-        await set_source_reaction(interaction, "❌")
+        await set_source_reaction(interaction, "\N{CROSS MARK}")
 
 
 async def set_source_reaction(interaction: discord.Interaction, emoji: str):
@@ -137,8 +137,8 @@ async def set_source_reaction(interaction: discord.Interaction, emoji: str):
         source_message_id = int(parts[-1])
         channel = interaction.client.get_channel(channel_id) or await interaction.client.fetch_channel(channel_id)
         source_message = await channel.fetch_message(source_message_id)
-        await source_message.clear_reaction("⏳")
-        await source_message.clear_reaction("📨")
+        await source_message.clear_reaction("\N{HOURGLASS}")
+        await source_message.clear_reaction("\N{OUTBOX TRAY}")
         await source_message.add_reaction(emoji)
     except (discord.HTTPException, IndexError, ValueError, AttributeError):
         pass

@@ -48,6 +48,37 @@ def build_ranking_embed(limit: int = 15) -> discord.Embed:
     return embed
 
 
+def build_dashboard_embed() -> discord.Embed:
+    scouts = get_all_scouts()
+    config = {a: p for a, p in get_all_config()}
+    scored = []
+    for row in scouts:
+        pts = calc_puntos_totales(row)
+        nivel, beneficio = get_nivel(pts)
+        scored.append((row, pts, nivel, beneficio))
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    embed = discord.Embed(
+        title="Dashboard Scouts",
+        color=COLOR_PANEL
+    )
+
+    if scored:
+        ranking = []
+        for i, (row, pts, nivel, _) in enumerate(scored[:10], start=1):
+            ranking.append(f"`#{i}` **{row[1]}** - `{pts} pts` [{nivel}]")
+        embed.add_field(name="Ranking", value="\n".join(ranking), inline=False)
+    else:
+        embed.add_field(name="Ranking", value="Sin datos aun.", inline=False)
+
+    points = []
+    for key, meta in ACTIVIDADES.items():
+        points.append(f"{meta['emoji']} **{meta['label']}**: `{config.get(key, 0)} pts`")
+    embed.add_field(name="Puntos", value="\n".join(points), inline=False)
+    embed.set_footer(text=f"Scouts registrados: {len(scouts)}")
+    return embed
+
+
 def build_perfil_embed(user_id: str, display_name: str) -> discord.Embed:
     row = get_scout(user_id)
     if not row:

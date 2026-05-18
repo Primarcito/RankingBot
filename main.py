@@ -8,14 +8,13 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from database import init_db, get_all_scouts, calc_puntos_totales, get_nivel, \
-    add_activity, subtract_activity, set_puntos, get_puntos, ensure_scout, COLS, \
-    create_evidence_review, get_pending_evidence_message_ids, set_evidence_review_message
+from database import init_db, create_evidence_review, get_pending_evidence_message_ids, set_evidence_review_message
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
+    DASHBOARD_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
-from views import EvidenceReviewView, PanelView, ResetView
-from embeds import build_panel_embed, build_ranking_embed, build_perfil_embed
+from views import EvidenceReviewView
+from embeds import build_dashboard_embed
 from permissions import is_admin
 from ocr import improve_confidence_for_channel, read_message_ocr, suggest_activity_from_ocr
 
@@ -40,7 +39,6 @@ ACT_CHOICES = [
 @bot.event
 async def on_ready():
     init_db()
-    bot.add_view(PanelView())   # re-registrar vista persistente tras reinicio
     for message_id in get_pending_evidence_message_ids():
         bot.add_view(EvidenceReviewView(message_id))
     await tree.sync()
@@ -70,6 +68,10 @@ async def on_message(message: discord.Message):
         color=COLOR_WARNING
     )
     analyzing_msg = await message.reply(embed=analyzing_embed, mention_author=False)
+    try:
+        await message.add_reaction("\N{HOURGLASS}")
+    except discord.HTTPException:
+        pass
 
     ocr_text = ""
     ocr_activity = None
@@ -134,12 +136,6 @@ async def on_message(message: discord.Message):
     await asyncio.sleep(60)
     await analyzing_msg.delete()
 
-    try:
-        await message.clear_reaction("?")
-        await message.add_reaction("??")
-    except discord.HTTPException:
-        pass
-
 def get_evidence_activity(message: discord.Message):
     if message.channel.id in EVIDENCE_CHANNEL_IDS:
         return EVIDENCE_CHANNEL_IDS[message.channel.id]
@@ -195,131 +191,30 @@ async def get_review_channel(message: discord.Message):
             pass
     return message.channel
 
-@tree.command(name="panel_scouts", description="Muestra el panel de registro de actividades")
-async def panel_scouts(interaction: discord.Interaction):
-    embed = build_panel_embed()
-    view = PanelView()
-    await interaction.response.send_message(embed=embed, view=view)
 
-# ── /ranking_scouts ───────────────────────────────────────────────────────────
-
-@tree.command(name="ranking_scouts", description="Muestra el ranking de scouts")
-async def ranking_scouts(interaction: discord.Interaction):
-    embed = build_ranking_embed()
-    await interaction.response.send_message(embed=embed)
-
-# ── /perfil_scout ─────────────────────────────────────────────────────────────
-
-@tree.command(name="perfil_scout", description="Muestra tu perfil de scout")
-async def perfil_scout(interaction: discord.Interaction):
-    user = interaction.user
-    embed = build_perfil_embed(str(user.id), user.display_name)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# ── /perfil_scout_usuario ─────────────────────────────────────────────────────
-
-@tree.command(name="perfil_scout_usuario", description="Muestra el perfil de otro scout")
-@app_commands.describe(usuario="Usuario a consultar")
-async def perfil_scout_usuario(interaction: discord.Interaction, usuario: discord.Member):
-    embed = build_perfil_embed(str(usuario.id), usuario.display_name)
-    await interaction.response.send_message(embed=embed)
-
-# ── /set_puntos ───────────────────────────────────────────────────────────────
-
-@tree.command(name="set_puntos", description="[Admin] Modifica el puntaje de una actividad")
-@app_commands.describe(actividad="Actividad a modificar", cantidad="Nuevos puntos")
-@app_commands.choices(actividad=ACT_CHOICES)
-async def set_puntos_cmd(interaction: discord.Interaction, actividad: app_commands.Choice[str], cantidad: int):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
-    set_puntos(actividad.value, cantidad)
-    embed = discord.Embed(
-        description=f"✅ **{actividad.name}** ahora vale `{cantidad} pts`",
-        color=COLOR_SUCCESS
-    )
-    await interaction.response.send_message(embed=embed)
-
-# ── /sumar_scout ──────────────────────────────────────────────────────────────
-
-@tree.command(name="sumar_scout", description="[Admin] Suma actividades a un scout manualmente")
-@app_commands.describe(usuario="Scout objetivo", actividad="Actividad", cantidad="Cantidad a sumar")
-@app_commands.choices(actividad=ACT_CHOICES)
-async def sumar_scout(interaction: discord.Interaction, usuario: discord.Member,
-                      actividad: app_commands.Choice[str], cantidad: int):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
-    if cantidad <= 0:
-        await interaction.response.send_message("La cantidad debe ser mayor a 0.", ephemeral=True)
-        return
-    pts = add_activity(str(usuario.id), usuario.display_name, actividad.value, cantidad)
-    embed = discord.Embed(
-        description=f"✅ `+{cantidad}` **{actividad.name}** a **{usuario.display_name}** (`+{pts} pts`)",
-        color=COLOR_SUCCESS
-    )
-    await interaction.response.send_message(embed=embed)
-
-# ── /restar_scout ─────────────────────────────────────────────────────────────
-
-@tree.command(name="restar_scout", description="[Admin] Resta actividades a un scout manualmente")
-@app_commands.describe(usuario="Scout objetivo", actividad="Actividad", cantidad="Cantidad a restar")
-@app_commands.choices(actividad=ACT_CHOICES)
-async def restar_scout(interaction: discord.Interaction, usuario: discord.Member,
-                       actividad: app_commands.Choice[str], cantidad: int):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
-    if cantidad <= 0:
-        await interaction.response.send_message("La cantidad debe ser mayor a 0.", ephemeral=True)
-        return
-    pts = subtract_activity(str(usuario.id), usuario.display_name, actividad.value, cantidad)
-    embed = discord.Embed(
-        description=f"✅ `-{cantidad}` **{actividad.name}** a **{usuario.display_name}** (`-{pts} pts`)",
-        color=COLOR_WARNING
-    )
-    await interaction.response.send_message(embed=embed)
-
-# ── /reset_scouts ─────────────────────────────────────────────────────────────
-
-@tree.command(name="reset_scouts", description="[Admin] Resetea todos los conteos")
-async def reset_scouts(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
-    embed = discord.Embed(
-        title="⚠️ Confirmar Reset",
-        description="¿Seguro que deseas borrar **todos** los conteos? Esta acción es irreversible.",
-        color=COLOR_ERROR
-    )
-    await interaction.response.send_message(embed=embed, view=ResetView(), ephemeral=True)
-
-# ── /exportar_scouts ──────────────────────────────────────────────────────────
-
-@tree.command(name="exportar_scouts", description="[Admin] Exporta los datos de scouts a CSV")
-async def exportar_scouts(interaction: discord.Interaction):
+@tree.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
+async def dashboard_scouts(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=False)
-    scouts = get_all_scouts()
+    channel = bot.get_channel(DASHBOARD_CHANNEL_ID)
+    if not channel:
+        channel = await bot.fetch_channel(DASHBOARD_CHANNEL_ID)
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["user_id","username","kill_scout","kill_pelea","limpieza_aspecto",
-                     "scouteo","mapeo","total_puntos","nivel","beneficio"])
+    embed = build_dashboard_embed()
+    dashboard_msg = None
+    async for msg in channel.history(limit=20):
+        if msg.author.id == bot.user.id and msg.embeds and msg.embeds[0].title == "Dashboard Scouts":
+            dashboard_msg = msg
+            break
 
-    for row in scouts:
-        pts = calc_puntos_totales(row)
-        nivel, beneficio = get_nivel(pts)
-        writer.writerow([row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                         pts, nivel, beneficio])
+    if dashboard_msg:
+        await dashboard_msg.edit(embed=embed)
+    else:
+        await channel.send(embed=embed)
 
-    output.seek(0)
-    file = discord.File(fp=io.BytesIO(output.getvalue().encode()), filename="scouts_export.csv")
-    embed = discord.Embed(description="✅ Exportación generada.", color=COLOR_SUCCESS)
-    await interaction.followup.send(embed=embed, file=file)
+    await interaction.response.send_message("Dashboard actualizado.", ephemeral=True)
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
