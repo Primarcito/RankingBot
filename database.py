@@ -142,6 +142,20 @@ def get_pending_evidence_message_ids():
         ).fetchall()
     return [row[0] for row in rows]
 
+def get_pending_count() -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM evidence_messages WHERE status='pending'"
+        ).fetchone()
+    return row[0] if row else 0
+
+def get_today_evidence_count() -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM evidence_messages WHERE DATE(fecha) = DATE('now')"
+        ).fetchone()
+    return row[0] if row else 0
+
 def approve_evidence(message_id: str):
     with get_conn() as conn:
         row = conn.execute(
