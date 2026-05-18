@@ -1,6 +1,7 @@
 import os
 import csv
 import io
+import asyncio
 import traceback
 import discord
 from discord import app_commands
@@ -131,6 +132,8 @@ async def on_message(message: discord.Message):
         color=COLOR_SUCCESS
     )
     await analyzing_msg.edit(embed=done_embed)
+    await asyncio.sleep(60)
+    await analyzing_msg.delete()
 
     try:
         await message.add_reaction("⏳")
