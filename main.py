@@ -63,6 +63,13 @@ async def on_message(message: discord.Message):
         print("[EVIDENCE] ignorado: sin imagen/texto")
         return
 
+    analyzing_embed = discord.Embed(
+        title="Analizando evidencia",
+        description="OCR en proceso. En breve se enviara a revision.",
+        color=COLOR_WARNING
+    )
+    analyzing_msg = await message.reply(embed=analyzing_embed, mention_author=False)
+
     ocr_text = ""
     ocr_activity = None
     ocr_hits = []
@@ -117,6 +124,13 @@ async def on_message(message: discord.Message):
     )
     set_evidence_review_message(str(message.id), str(review_msg.id))
     print(f"[EVIDENCE] enviado review={review_msg.id}")
+
+    done_embed = discord.Embed(
+        title="Evidencia enviada a revision",
+        description=f"Revision: {review_msg.jump_url}",
+        color=COLOR_SUCCESS
+    )
+    await analyzing_msg.edit(embed=done_embed)
 
     try:
         await message.add_reaction("⏳")
