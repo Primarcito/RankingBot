@@ -145,12 +145,12 @@ def get_pending_evidence_message_ids():
 def approve_evidence(message_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT user_id, actividad, puntos, status FROM evidence_messages WHERE message_id=?",
+            "SELECT user_id, actividad, puntos, status, review_message_id FROM evidence_messages WHERE message_id=?",
             (message_id,)
         ).fetchone()
         if not row or row[3] != "pending":
             return None
-        user_id, actividad, puntos, _ = row
+        user_id, actividad, puntos, _, review_message_id = row
         scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
         username = scout[0] if scout else user_id
         conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + 1 WHERE user_id=?", (user_id,))
@@ -163,12 +163,12 @@ def approve_evidence(message_id: str):
             (user_id, username, actividad, 1, puntos, datetime.utcnow().isoformat(), "evidencia_aprobada")
         )
         conn.commit()
-    return user_id, actividad, puntos
+    return user_id, actividad, puntos, review_message_id
 
 def reject_evidence(message_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT status FROM evidence_messages WHERE message_id=?",
+            "SELECT status, review_message_id FROM evidence_messages WHERE message_id=?",
             (message_id,)
         ).fetchone()
         if not row or row[0] != "pending":
@@ -178,7 +178,7 @@ def reject_evidence(message_id: str):
             (message_id,)
         )
         conn.commit()
-    return True
+    return row[1]
 
 def subtract_activity(user_id: str, username: str, actividad: str, cantidad: int):
     ensure_scout(user_id, username)
