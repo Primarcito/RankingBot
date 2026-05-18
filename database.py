@@ -17,13 +17,18 @@ def init_db():
                 user_id TEXT PRIMARY KEY,
                 username TEXT,
                 kill_scout INTEGER DEFAULT 0,
-                kill_persona INTEGER DEFAULT 0,
+                kill_pelea INTEGER DEFAULT 0,
                 limpieza_aspecto INTEGER DEFAULT 0,
                 scouteo INTEGER DEFAULT 0,
-                mapeo INTEGER DEFAULT 0,
-                prio_lider INTEGER DEFAULT 0
+                mapeo INTEGER DEFAULT 0
             )
         """)
+        c.execute("PRAGMA table_info(scouts)")
+        scout_cols = [row[1] for row in c.fetchall()]
+        if "kill_pelea" not in scout_cols:
+            c.execute("ALTER TABLE scouts ADD COLUMN kill_pelea INTEGER DEFAULT 0")
+        if "kill_persona" in scout_cols:
+            c.execute("UPDATE scouts SET kill_pelea = kill_pelea + kill_persona")
         c.execute("""
             CREATE TABLE IF NOT EXISTS config (
                 actividad TEXT PRIMARY KEY,
@@ -61,12 +66,11 @@ def init_db():
             c.execute("ALTER TABLE evidence_messages ADD COLUMN review_message_id TEXT")
         # Valores por defecto de configuración
         defaults = [
-            ("kill_scout", 10),
-            ("kill_persona", 3),
-            ("limpieza_aspecto", 8),
-            ("scouteo", 6),
-            ("mapeo", 5),
-            ("prio_lider", 10),
+            ("kill_scout", 2),
+            ("kill_pelea", 3),
+            ("limpieza_aspecto", 1),
+            ("scouteo", 2),
+            ("mapeo", 1),
         ]
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
         conn.commit()
@@ -84,12 +88,12 @@ def ensure_scout(user_id: str, username: str):
 
 def get_scout(user_id: str):
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM scouts WHERE user_id=?", (user_id,)).fetchone()
-    return row  # (user_id, username, kill_scout, kill_persona, limpieza_aspecto, scouteo, mapeo, prio_lider)
+        row = conn.execute(scout_select_sql("WHERE user_id=?"), (user_id,)).fetchone()
+    return row
 
 def get_all_scouts():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM scouts").fetchall()
+        rows = conn.execute(scout_select_sql()).fetchall()
     return rows
 
 def add_activity(user_id: str, username: str, actividad: str, cantidad: int):
@@ -179,8 +183,7 @@ def reject_evidence(message_id: str):
 def subtract_activity(user_id: str, username: str, actividad: str, cantidad: int):
     ensure_scout(user_id, username)
     row = get_scout(user_id)
-    cols = ["kill_scout","kill_persona","limpieza_aspecto","scouteo","mapeo","prio_lider"]
-    current = row[cols.index(actividad) + 2]
+    current = row[COLS.index(actividad) + 2]
     real_sub = min(cantidad, current)  # no negativos
     puntos_unit = get_puntos(actividad)
     total_puntos = puntos_unit * real_sub
@@ -220,7 +223,10 @@ def get_all_config():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-COLS = ["kill_scout","kill_persona","limpieza_aspecto","scouteo","mapeo","prio_lider"]
+COLS = ["kill_scout","kill_pelea","limpieza_aspecto","scouteo","mapeo"]
+
+def scout_select_sql(where_clause: str = ""):
+    return "SELECT user_id, username, kill_scout, kill_pelea, limpieza_aspecto, scouteo, mapeo FROM scouts " + where_clause
 
 def calc_puntos_totales(row) -> int:
     config = {a: p for a, p in get_all_config()}

@@ -50,6 +50,15 @@ def suggest_activity_from_ocr(text):
     return activity, hits, confidence
 
 
+def improve_confidence_for_channel(channel_activity, ocr_activity, ocr_hits):
+    if not ocr_activity:
+        return channel_activity, [], "Baja"
+    if ocr_activity == channel_activity:
+        confidence = "Alta" if len(ocr_hits) >= 2 else "Media"
+        return channel_activity, ocr_hits, confidence
+    return channel_activity, ocr_hits, "Media"
+
+
 def normalize_text(text):
     text = text.lower()
     text = unicodedata.normalize("NFKD", text)

@@ -17,7 +17,7 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLO
 from views import EvidenceReviewView, PanelView, ResetView
 from embeds import build_panel_embed, build_ranking_embed, build_perfil_embed
 from permissions import is_admin
-from ocr import read_message_ocr, suggest_activity_from_ocr
+from ocr import improve_confidence_for_channel, read_message_ocr, suggest_activity_from_ocr
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -83,8 +83,7 @@ async def on_message(message: discord.Message):
             ocr_text = f"OCR error: {err}"
             print(f"[OCR ERROR] {err}")
 
-    if ocr_activity:
-        actividad = ocr_activity
+    actividad, ocr_hits, ocr_confidence = improve_confidence_for_channel(actividad, ocr_activity, ocr_hits)
 
     pts = create_evidence_review(
         str(message.id),
@@ -307,13 +306,13 @@ async def exportar_scouts(interaction: discord.Interaction):
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["user_id","username","kill_scout","kill_persona","limpieza_aspecto",
-                     "scouteo","mapeo","prio_lider","total_puntos","nivel","beneficio"])
+    writer.writerow(["user_id","username","kill_scout","kill_pelea","limpieza_aspecto",
+                     "scouteo","mapeo","total_puntos","nivel","beneficio"])
 
     for row in scouts:
         pts = calc_puntos_totales(row)
         nivel, beneficio = get_nivel(pts)
-        writer.writerow([row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7],
+        writer.writerow([row[0], row[1], row[2], row[3], row[4], row[5], row[6],
                          pts, nivel, beneficio])
 
     output.seek(0)

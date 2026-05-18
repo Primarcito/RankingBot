@@ -1,11 +1,10 @@
 # Mapeo visual de actividades
 ACTIVIDADES = {
     "kill_scout":       {"label": "Kill Scout",        "emoji": "🎯"},
-    "kill_persona":     {"label": "Kill Persona",       "emoji": "⚔️"},
+    "kill_pelea":       {"label": "Kill Pelea",         "emoji": "⚔️"},
     "limpieza_aspecto": {"label": "Limpieza Aspecto",   "emoji": "🧹"},
     "scouteo":          {"label": "Scouteo",            "emoji": "👁️"},
     "mapeo":            {"label": "Mapeo",              "emoji": "🗺️"},
-    "prio_lider":       {"label": "Prio Líder",         "emoji": "👑"},
 }
 
 COLOR_PANEL    = 0x2F3136
@@ -31,7 +30,7 @@ LOG_CHANNEL_ID = 0
 EVIDENCE_CHANNEL_IDS = {
     1505954534852268214: "kill_scout",
     1505955261930541166: "limpieza_aspecto",
-    1505954779464208425: "kill_persona",
+    1505954779464208425: "kill_pelea",
     1505984531063377970: "scouteo",
     1505954990756204755: "mapeo",
 }
@@ -44,7 +43,7 @@ EVIDENCE_CATEGORY = "evidencias"
 EVIDENCE_CHANNELS = {
     "scouts": "scouteo",
     "limpieza": "limpieza_aspecto",
-    "peleas": "kill_persona",
+    "peleas": "kill_pelea",
     "scouteo": "scouteo",
     "mapeo": "mapeo",
 }
@@ -54,11 +53,19 @@ OCR_ENABLED = True
 OCR_MAX_IMAGES = 1
 OCR_LANG = "eng"
 OCR_RULES = {
-    "kill_persona": [
+    "kill_scout": [
+        "has matado a",
+        "detalles de asesinato",
+        "fama de asesinato",
+        "botin de",
+        "botín de",
+    ],
+    "kill_pelea": [
         "has matado a",
         "detalles de asesinato",
         "fama de asesinato",
         "asesino",
+        "ayuda",
     ],
     "limpieza_aspecto": [
         "botin de",
@@ -81,3 +88,4 @@ OCR_RULES = {
         "entrando en",
     ],
 }
+
