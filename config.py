@@ -52,29 +52,49 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
 OCR_ENABLED = True
 OCR_MAX_IMAGES = 1
-OCR_LANG = "eng"
+OCR_LANG = "spa+eng"
 OCR_RULES = {
     "kill_scout": [
-        "has matado a",
+        "kill details",
         "detalles de asesinato",
+        "kill fame",
         "fama de asesinato",
-        "botin de",
-        "botín de",
+        "you killed",
+        "has matado a",
+        "kill player",
+        "matar a jugador",
+        "suspicious",
+        "reputation",
     ],
     "kill_pelea": [
-        "has matado a",
+        "kill details",
         "detalles de asesinato",
+        "kill fame",
         "fama de asesinato",
-        "asesino",
+        "you killed",
+        "has matado a",
+        "kill player",
+        "matar a jugador",
+        "assist",
         "ayuda",
     ],
     "limpieza_aspecto": [
         "botin de",
         "botín de",
         "valor est. de mercado",
+        "valor est de mercado",
         "tomar todo",
         "no disponible como botin",
         "no disponible como botín",
+        "heretic",
+        "heretico",
+        "undead",
+        "muerto viviente",
+        "keeper",
+        "morgana",
+        "dungeon",
+        "aspecto de",
+        "aspect of",
     ],
     "mapeo": [
         "wetgrave swale",
@@ -82,11 +102,17 @@ OCR_RULES = {
         "meltwater delta",
         "bono de recoleccion",
         "bono de recolección",
+        "roads of avalon",
+        "caminos de avalon",
+        "map fragment",
+        "fragmento de mapa",
     ],
     "scouteo": [
         "nuestros guardias",
         "han divisado enemigos",
         "entrando en",
+        "enemy spotted",
+        "hostile",
     ],
 }
 

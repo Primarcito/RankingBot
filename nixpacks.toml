@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "tesseract", "tesseract-ocr"]
+nixPkgs = ["python311", "tesseract", "tesseract-ocr", "tesseract-ocr-spa"]
 nixLibs = ["zlib", "libjpeg", "libpng"]
 
 [variables]

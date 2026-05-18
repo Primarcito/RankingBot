@@ -44,6 +44,16 @@ def suggest_activity_from_ocr(text):
     if not matches:
         return None, [], "Baja"
 
+    if "kill_scout" in matches and "kill_pelea" in matches:
+        assists_match = re.search(r"(\d+)\s*(?:assist|ayuda)", normalized)
+        if assists_match:
+            if int(assists_match.group(1)) > 0:
+                matches.pop("kill_scout")
+            else:
+                matches.pop("kill_pelea")
+        else:
+            matches.pop("kill_pelea")
+
     activity = max(matches, key=lambda key: len(matches[key]))
     hits = matches[activity]
     confidence = "Alta" if len(hits) >= 2 else "Media"
