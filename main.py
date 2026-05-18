@@ -13,7 +13,7 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLO
     DASHBOARD_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
-from views import EvidenceReviewView
+from views import DashboardView, EvidenceReviewView
 from embeds import build_dashboard_embed
 from permissions import is_admin
 from ocr import improve_confidence_for_channel, read_message_ocr, suggest_activity_from_ocr
@@ -39,6 +39,7 @@ ACT_CHOICES = [
 @bot.event
 async def on_ready():
     init_db()
+    bot.add_view(DashboardView())
     for message_id in get_pending_evidence_message_ids():
         bot.add_view(EvidenceReviewView(message_id))
     await tree.sync()
@@ -210,9 +211,9 @@ async def dashboard_scouts(interaction: discord.Interaction):
             break
 
     if dashboard_msg:
-        await dashboard_msg.edit(embed=embed)
+        await dashboard_msg.edit(embed=embed, view=DashboardView())
     else:
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, view=DashboardView())
 
     await interaction.response.send_message("Dashboard actualizado.", ephemeral=True)
 
