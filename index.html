@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scout Ranking — Albion Online</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --bg:#0a0b0f;--surface:#13151c;--surface2:#1a1d27;--border:#2a2d3e;
+    --gold:#f5c842;--gold2:#e6a817;--blue:#5865f2;--green:#3ba55d;
+    --red:#ed4245;--text:#e8eaf0;--muted:#6b7280;
+    --s:#f5c842;--a:#a78bfa;--b:#60a5fa;--c:#6b7280;--in:#374151;
+  }
+  body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh}
+
+  /* NAV */
+  nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between;height:60px;position:sticky;top:0;z-index:100}
+  .logo{font-weight:900;font-size:1.1rem;color:var(--gold);letter-spacing:.5px}
+  .logo span{color:var(--text);font-weight:400}
+  .nav-tabs{display:flex;gap:4px}
+  .tab{padding:6px 16px;border-radius:8px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:.85rem;font-family:inherit;font-weight:500;transition:all .2s}
+  .tab:hover{background:var(--surface2);color:var(--text)}
+  .tab.active{background:var(--blue);color:#fff}
+
+  /* LAYOUT */
+  main{max-width:1100px;margin:0 auto;padding:32px 20px}
+  .page{display:none}.page.active{display:block}
+
+  /* CARDS */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:20px}
+  .card-title{font-size:.7rem;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:16px}
+
+  /* PANEL PAGE */
+  .panel-header{text-align:center;padding:32px 0 24px}
+  .panel-header h1{font-size:2rem;font-weight:900;background:linear-gradient(135deg,var(--gold),var(--gold2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
+  .panel-header p{color:var(--muted);font-size:.9rem}
+
+  .scout-selector{display:flex;gap:12px;align-items:center;margin-bottom:28px}
+  .scout-selector input{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 16px;color:var(--text);font-family:inherit;font-size:.9rem;outline:none;transition:border .2s}
+  .scout-selector input:focus{border-color:var(--blue)}
+  .scout-selector input::placeholder{color:var(--muted)}
+
+  .activity-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
+  .act-btn{background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:20px 16px;cursor:pointer;transition:all .2s;text-align:center;font-family:inherit;color:var(--text)}
+  .act-btn:hover{border-color:var(--blue);background:#1e2235;transform:translateY(-2px);box-shadow:0 8px 24px rgba(88,101,242,.15)}
+  .act-btn:active{transform:translateY(0)}
+  .act-btn .emoji{font-size:2rem;margin-bottom:8px;display:block}
+  .act-btn .label{font-size:.85rem;font-weight:600;display:block;margin-bottom:4px}
+  .act-btn .pts{font-size:.75rem;color:var(--gold);font-weight:500}
+
+  /* TOAST */
+  #toast{position:fixed;bottom:24px;right:24px;background:var(--green);color:#fff;padding:12px 20px;border-radius:12px;font-size:.85rem;font-weight:600;opacity:0;transform:translateY(10px);transition:all .3s;z-index:999;pointer-events:none}
+  #toast.show{opacity:1;transform:translateY(0)}
+
+  /* RANKING */
+  .rank-item{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:12px;border:1px solid var(--border);background:var(--surface2);margin-bottom:10px;transition:all .2s}
+  .rank-item:hover{border-color:var(--border);background:#1e2235}
+  .rank-pos{font-size:1.2rem;min-width:36px;text-align:center}
+  .rank-name{font-weight:700;font-size:.95rem;flex:1}
+  .rank-pts{font-weight:800;font-size:1.1rem;color:var(--gold)}
+  .badge{padding:3px 10px;border-radius:20px;font-size:.7rem;font-weight:700;letter-spacing:.5px}
+  .badge-S{background:#78350f;color:var(--s)}
+  .badge-A{background:#2e1065;color:var(--a)}
+  .badge-B{background:#1e3a5f;color:var(--b)}
+  .badge-C{background:#1f2937;color:var(--c)}
+  .badge-Inactivo{background:#111827;color:var(--in)}
+  .rank-acts{display:flex;gap:8px;flex-wrap:wrap}
+  .rank-act{font-size:.72rem;color:var(--muted);background:var(--surface);padding:2px 8px;border-radius:6px}
+
+  /* PROFILE */
+  .profile-hero{text-align:center;padding:24px 0 16px}
+  .profile-hero .name{font-size:1.5rem;font-weight:900}
+  .profile-hero .pts-big{font-size:3rem;font-weight:900;color:var(--gold);line-height:1}
+  .profile-hero .pts-label{font-size:.8rem;color:var(--muted);margin-top:4px}
+  .profile-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:20px}
+  .profile-stat{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;text-align:center}
+  .profile-stat .s-emoji{font-size:1.4rem}
+  .profile-stat .s-count{font-size:1.4rem;font-weight:800;color:var(--text)}
+  .profile-stat .s-label{font-size:.7rem;color:var(--muted);margin-top:2px}
+
+  /* ADMIN */
+  .form-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px}
+  .form-group{display:flex;flex-direction:column;gap:5px;flex:1;min-width:140px}
+  .form-group label{font-size:.75rem;color:var(--muted);font-weight:500}
+  select,input[type=number],input[type=text]{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-family:inherit;font-size:.85rem;outline:none;width:100%;transition:border .2s}
+  select:focus,input:focus{border-color:var(--blue)}
+  select option{background:var(--surface2)}
+  .btn{padding:9px 18px;border-radius:8px;border:none;font-family:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:all .2s}
+  .btn-blue{background:var(--blue);color:#fff}.btn-blue:hover{background:#4752c4}
+  .btn-green{background:var(--green);color:#fff}.btn-green:hover{background:#2d8049}
+  .btn-red{background:var(--red);color:#fff}.btn-red:hover{background:#c03537}
+  .btn-gold{background:var(--gold);color:#000}.btn-gold:hover{background:var(--gold2)}
+  .btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border)}.btn-ghost:hover{border-color:var(--blue);color:var(--blue)}
+
+  /* MODAL */
+  .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:center;justify-content:center}
+  .modal-bg.open{display:flex}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:32px;max-width:400px;width:90%;text-align:center}
+  .modal h2{font-size:1.2rem;margin-bottom:8px}
+  .modal p{color:var(--muted);font-size:.88rem;margin-bottom:24px}
+  .modal-btns{display:flex;gap:10px;justify-content:center}
+
+  /* SEARCH */
+  .search-box{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 14px;color:var(--text);font-family:inherit;font-size:.85rem;outline:none;width:100%;margin-bottom:16px;transition:border .2s}
+  .search-box:focus{border-color:var(--blue)}
+
+  /* CONFIG TABLE */
+  .config-table{width:100%;border-collapse:collapse}
+  .config-table th{text-align:left;font-size:.72rem;color:var(--muted);font-weight:600;letter-spacing:1px;text-transform:uppercase;padding:8px 12px;border-bottom:1px solid var(--border)}
+  .config-table td{padding:10px 12px;border-bottom:1px solid #1a1d27;font-size:.88rem}
+  .config-table input{width:80px;text-align:center}
+
+  .section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .section-head h2{font-size:1.3rem;font-weight:800}
+  .empty{text-align:center;color:var(--muted);padding:40px;font-size:.9rem}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">⚔️ Scout Ranking <span>· Albion Online</span></div>
+  <div class="nav-tabs">
+    <button class="tab active" onclick="goPage('panel')">🎮 Panel</button>
+    <button class="tab" onclick="goPage('ranking')">🏆 Ranking</button>
+    <button class="tab" onclick="goPage('perfil')">👤 Perfil</button>
+    <button class="tab" onclick="goPage('admin')">⚙️ Admin</button>
+  </div>
+</nav>
+
+<main>
+  <!-- PANEL -->
+  <div class="page active" id="page-panel">
+    <div class="panel-header">
+      <h1>SISTEMA DE SCOUTS</h1>
+      <p>Selecciona tu nombre y presiona una actividad para registrarla</p>
+    </div>
+    <div class="card">
+      <div class="card-title">Tu nombre</div>
+      <div class="scout-selector">
+        <input type="text" id="currentUser" placeholder="Escribe tu nombre de scout..." maxlength="32" autocomplete="off">
+        <button class="btn btn-blue" onclick="saveUser()">Guardar</button>
+      </div>
+      <div class="card-title">Actividades</div>
+      <div class="activity-grid" id="actGrid"></div>
+    </div>
+  </div>
+
+  <!-- RANKING -->
+  <div class="page" id="page-ranking">
+    <div class="section-head">
+      <h2>🏆 Ranking de Scouts</h2>
+      <button class="btn btn-ghost" onclick="renderRanking()">↻ Actualizar</button>
+    </div>
+    <input class="search-box" type="text" placeholder="Buscar scout..." oninput="renderRanking(this.value)">
+    <div id="rankList"></div>
+  </div>
+
+  <!-- PERFIL -->
+  <div class="page" id="page-perfil">
+    <div class="card">
+      <div class="card-title">Consultar perfil</div>
+      <div class="form-row">
+        <div class="form-group"><input type="text" id="profileSearch" placeholder="Nombre del scout..." autocomplete="off"></div>
+        <button class="btn btn-blue" onclick="renderProfile(document.getElementById('profileSearch').value)">Ver</button>
+        <button class="btn btn-ghost" onclick="loadMyProfile()">Mi perfil</button>
+      </div>
+    </div>
+    <div id="profileOut"></div>
+  </div>
+
+  <!-- ADMIN -->
+  <div class="page" id="page-admin">
+    <!-- Config puntos -->
+    <div class="card">
+      <div class="card-title">Puntaje por actividad</div>
+      <table class="config-table">
+        <thead><tr><th>Actividad</th><th>Puntos</th><th></th></tr></thead>
+        <tbody id="configBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Sumar/Restar -->
+    <div class="card">
+      <div class="card-title">Sumar / Restar actividades</div>
+      <div class="form-row">
+        <div class="form-group"><label>Scout</label><input type="text" id="a_scout" placeholder="Nombre..."></div>
+        <div class="form-group"><label>Actividad</label><select id="a_act"></select></div>
+        <div class="form-group"><label>Cantidad</label><input type="number" id="a_qty" value="1" min="1" style="width:90px"></div>
+        <button class="btn btn-green" onclick="adminAdd()">+ Sumar</button>
+        <button class="btn btn-red" onclick="adminSub()">− Restar</button>
+      </div>
+    </div>
+
+    <!-- Reset & Export -->
+    <div class="card">
+      <div class="card-title">Acciones globales</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-red" onclick="openResetModal()">🗑️ Resetear todo</button>
+        <button class="btn btn-gold" onclick="exportCSV()">📥 Exportar CSV</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<!-- RESET MODAL -->
+<div class="modal-bg" id="resetModal">
+  <div class="modal">
+    <h2>⚠️ Confirmar Reset</h2>
+    <p>Esto borrará todos los conteos de scouts. Esta acción es irreversible.</p>
+    <div class="modal-btns">
+      <button class="btn btn-red" onclick="confirmReset()">Confirmar</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── DATA ────────────────────────────────────────────────────────────────────
+const ACTS = {
+  kill_scout:       {label:'Kill Scout',       emoji:'🎯'},
+  kill_persona:     {label:'Kill Persona',     emoji:'⚔️'},
+  limpieza_aspecto: {label:'Limpieza Aspecto', emoji:'🧹'},
+  scouteo:          {label:'Scouteo',          emoji:'👁️'},
+  mapeo:            {label:'Mapeo',            emoji:'🗺️'},
+  prio_lider:       {label:'Prio Líder',       emoji:'👑'},
+}
+const ACT_KEYS = Object.keys(ACTS)
+const DEFAULT_PTS = {kill_scout:10,kill_persona:3,limpieza_aspecto:8,scouteo:6,mapeo:5,prio_lider:10}
+
+function loadData(){
+  return JSON.parse(localStorage.getItem('scouts_db')||'{}')
+}
+function saveData(db){
+  localStorage.setItem('scouts_db',JSON.stringify(db))
+}
+function loadConfig(){
+  const c = JSON.parse(localStorage.getItem('scouts_config')||'null')
+  return c || {...DEFAULT_PTS}
+}
+function saveConfig(c){
+  localStorage.setItem('scouts_config',JSON.stringify(c))
+}
+function loadUser(){
+  return localStorage.getItem('scouts_me')||''
+}
+function saveUserLS(name){
+  localStorage.setItem('scouts_me',name)
+}
+
+function calcPts(scout, config){
+  return ACT_KEYS.reduce((s,k)=>s+(scout[k]||0)*(config[k]||0),0)
+}
+function getNivel(pts){
+  if(pts>=120) return {nivel:'S',   beneficio:'Máxima prioridad'}
+  if(pts>=80)  return {nivel:'A',   beneficio:'Alta prioridad'}
+  if(pts>=50)  return {nivel:'B',   beneficio:'Prioridad media'}
+  if(pts>=20)  return {nivel:'C',   beneficio:'Prioridad básica'}
+  return              {nivel:'Inactivo', beneficio:'Sin prioridad'}
+}
+function ensureScout(db, name){
+  const key = name.trim().toLowerCase()
+  if(!db[key]) db[key]={username:name.trim(), kill_scout:0,kill_persona:0,limpieza_aspecto:0,scouteo:0,mapeo:0,prio_lider:0}
+  return key
+}
+
+// ── TOAST ───────────────────────────────────────────────────────────────────
+let toastTimer
+function toast(msg, color='#3ba55d'){
+  const t=document.getElementById('toast')
+  t.textContent=msg; t.style.background=color
+  t.classList.add('show')
+  clearTimeout(toastTimer)
+  toastTimer=setTimeout(()=>t.classList.remove('show'),2500)
+}
+
+// ── NAV ─────────────────────────────────────────────────────────────────────
+function goPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'))
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'))
+  document.getElementById('page-'+id).classList.add('active')
+  event.currentTarget.classList.add('active')
+  if(id==='ranking') renderRanking()
+  if(id==='admin') renderAdmin()
+}
+
+// ── PANEL ───────────────────────────────────────────────────────────────────
+function saveUser(){
+  const v=document.getElementById('currentUser').value.trim()
+  if(!v){toast('Escribe tu nombre primero','#ed4245');return}
+  saveUserLS(v); toast('✅ Nombre guardado: '+v)
+}
+
+function buildPanel(){
+  const grid=document.getElementById('actGrid')
+  const config=loadConfig()
+  grid.innerHTML=''
+  ACT_KEYS.forEach(k=>{
+    const m=ACTS[k]
+    const btn=document.createElement('button')
+    btn.className='act-btn'
+    btn.innerHTML=`<span class="emoji">${m.emoji}</span><span class="label">${m.label}</span><span class="pts">+${config[k]} pts</span>`
+    btn.onclick=()=>registerActivity(k)
+    grid.appendChild(btn)
+  })
+  document.getElementById('currentUser').value=loadUser()
+}
+
+function registerActivity(act){
+  const name=(document.getElementById('currentUser').value||loadUser()).trim()
+  if(!name){toast('Escribe tu nombre primero ↑','#ed4245');return}
+  const db=loadData(); const config=loadConfig()
+  const key=ensureScout(db,name)
+  db[key][act]=(db[key][act]||0)+1
+  db[key].username=name
+  saveData(db)
+  const pts=config[act]||0
+  toast(`${ACTS[act].emoji} ${ACTS[act].label} +1 · +${pts} pts`)
+}
+
+// ── RANKING ──────────────────────────────────────────────────────────────────
+function renderRanking(filter=''){
+  const db=loadData(); const config=loadConfig()
+  const list=document.getElementById('rankList')
+  let scouts=Object.values(db).map(s=>({...s,pts:calcPts(s,config)}))
+  scouts.sort((a,b)=>b.pts-a.pts)
+  if(filter) scouts=scouts.filter(s=>s.username.toLowerCase().includes(filter.toLowerCase()))
+  scouts=scouts.slice(0,15)
+  if(!scouts.length){list.innerHTML='<div class="empty">Sin datos aún.</div>';return}
+  const medals=['🥇','🥈','🥉']
+  list.innerHTML=scouts.map((s,i)=>{
+    const {nivel,beneficio}=getNivel(s.pts)
+    const acts=ACT_KEYS.map(k=>`<span class="rank-act">${ACTS[k].emoji}${s[k]||0}</span>`).join('')
+    return `<div class="rank-item">
+      <div class="rank-pos">${medals[i]||'🔹'}</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+          <span class="rank-name">${s.username}</span>
+          <span class="badge badge-${nivel}">${nivel}</span>
+          <span style="font-size:.72rem;color:var(--muted)">${beneficio}</span>
+        </div>
+        <div class="rank-acts">${acts}</div>
+      </div>
+      <div class="rank-pts">${s.pts}</div>
+    </div>`
+  }).join('')
+}
+
+// ── PERFIL ───────────────────────────────────────────────────────────────────
+function loadMyProfile(){
+  document.getElementById('profileSearch').value=loadUser()
+  renderProfile(loadUser())
+}
+
+function renderProfile(name){
+  const out=document.getElementById('profileOut')
+  if(!name){out.innerHTML='<div class="empty">Escribe un nombre y presiona Ver.</div>';return}
+  const db=loadData(); const config=loadConfig()
+  const key=name.trim().toLowerCase()
+  const s=Object.values(db).find(x=>x.username.toLowerCase()===key||x.username.toLowerCase().includes(key.toLowerCase()))
+  if(!s){out.innerHTML='<div class="empty">Scout no encontrado.</div>';return}
+  const pts=calcPts(s,config)
+  const {nivel,beneficio}=getNivel(pts)
+  const acts=ACT_KEYS.map(k=>`
+    <div class="profile-stat">
+      <div class="s-emoji">${ACTS[k].emoji}</div>
+      <div class="s-count">${s[k]||0}</div>
+      <div class="s-label">${ACTS[k].label}</div>
+    </div>`).join('')
+  out.innerHTML=`<div class="card">
+    <div class="profile-hero">
+      <div class="name">${s.username}</div>
+      <div class="pts-big">${pts}</div>
+      <div class="pts-label">puntos totales</div>
+      <div style="margin-top:10px"><span class="badge badge-${nivel}" style="font-size:.85rem;padding:5px 14px">${nivel} — ${beneficio}</span></div>
+    </div>
+    <div class="profile-grid">${acts}</div>
+  </div>`
+}
+
+// ── ADMIN ─────────────────────────────────────────────────────────────────────
+function renderAdmin(){
+  const config=loadConfig()
+  // config table
+  document.getElementById('configBody').innerHTML=ACT_KEYS.map(k=>`
+    <tr>
+      <td>${ACTS[k].emoji} ${ACTS[k].label}</td>
+      <td><input type="number" value="${config[k]}" id="cfg_${k}" min="0"></td>
+      <td><button class="btn btn-blue" style="padding:5px 12px;font-size:.78rem" onclick="saveCfg('${k}')">Guardar</button></td>
+    </tr>`).join('')
+  // activity selects
+  const sel=document.getElementById('a_act')
+  sel.innerHTML=ACT_KEYS.map(k=>`<option value="${k}">${ACTS[k].label}</option>`).join('')
+}
+
+function saveCfg(k){
+  const config=loadConfig()
+  const val=parseInt(document.getElementById('cfg_'+k).value)||0
+  config[k]=val; saveConfig(config)
+  buildPanel(); toast(`✅ ${ACTS[k].label} = ${val} pts`)
+}
+
+function getAdminInputs(){
+  const name=document.getElementById('a_scout').value.trim()
+  const act=document.getElementById('a_act').value
+  const qty=parseInt(document.getElementById('a_qty').value)||1
+  if(!name){toast('Escribe el nombre del scout','#ed4245');return null}
+  return {name,act,qty}
+}
+
+function adminAdd(){
+  const inp=getAdminInputs(); if(!inp) return
+  const db=loadData(); const config=loadConfig()
+  const key=ensureScout(db,inp.name)
+  db[key][inp.act]=(db[key][inp.act]||0)+inp.qty
+  saveData(db)
+  toast(`✅ +${inp.qty} ${ACTS[inp.act].label} a ${inp.name}`)
+}
+
+function adminSub(){
+  const inp=getAdminInputs(); if(!inp) return
+  const db=loadData()
+  const key=inp.name.trim().toLowerCase()
+  const found=Object.keys(db).find(k=>k===key||db[k].username.toLowerCase().includes(key))
+  if(!found){toast('Scout no encontrado','#ed4245');return}
+  db[found][inp.act]=Math.max(0,(db[found][inp.act]||0)-inp.qty)
+  saveData(db)
+  toast(`✅ -${inp.qty} ${ACTS[inp.act].label} a ${db[found].username}`)
+}
+
+// ── RESET ─────────────────────────────────────────────────────────────────────
+function openResetModal(){document.getElementById('resetModal').classList.add('open')}
+function closeModal(){document.getElementById('resetModal').classList.remove('open')}
+function confirmReset(){
+  localStorage.removeItem('scouts_db')
+  closeModal(); toast('🗑️ Todos los conteos reseteados','#ed4245')
+}
+
+// ── EXPORT ─────────────────────────────────────────────────────────────────────
+function exportCSV(){
+  const db=loadData(); const config=loadConfig()
+  const rows=[['username','kill_scout','kill_persona','limpieza_aspecto','scouteo','mapeo','prio_lider','total_puntos','nivel','beneficio']]
+  Object.values(db).forEach(s=>{
+    const pts=calcPts(s,config)
+    const {nivel,beneficio}=getNivel(pts)
+    rows.push([s.username,s.kill_scout||0,s.kill_persona||0,s.limpieza_aspecto||0,s.scouteo||0,s.mapeo||0,s.prio_lider||0,pts,nivel,beneficio])
+  })
+  const csv=rows.map(r=>r.join(',')).join('\n')
+  const a=document.createElement('a')
+  a.href='data:text/csv;charset=utf-8,\uFEFF'+encodeURIComponent(csv)
+  a.download='scouts_export.csv'; a.click()
+  toast('📥 CSV exportado')
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+buildPanel()
+</script>
+</body>
+</html>
