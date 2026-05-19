@@ -3,12 +3,13 @@ import csv
 import io
 import asyncio
 import traceback
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from database import init_db, create_evidence_review, get_pending_evidence_message_ids, set_evidence_review_message
+from database import init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, set_evidence_review_message
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
@@ -90,11 +91,14 @@ async def on_message(message: discord.Message):
 
     actividad, ocr_hits, ocr_confidence = improve_confidence_for_channel(actividad, ocr_activity, ocr_hits)
 
+    participants, unresolved_names = await get_evidence_participants(message)
+
     pts = create_evidence_review(
         str(message.id),
         str(message.author.id),
         message.author.display_name,
-        actividad
+        actividad,
+        participants
     )
     if pts <= 0:
         print("[EVIDENCE] duplicado")
@@ -119,6 +123,15 @@ async def on_message(message: discord.Message):
         embed.add_field(name="OCR", value=ocr_text[:1000], inline=False)
     if message.content.strip():
         embed.add_field(name="Texto", value=message.content[:1000], inline=False)
+    if len(participants) > 1:
+        participant_text = "\n".join(f"<@{user_id}>" for user_id, _ in participants[:20])
+        embed.add_field(name="Participantes", value=participant_text[:1000], inline=False)
+    if unresolved_names:
+        embed.add_field(
+            name="No resueltos",
+            value=", ".join(f"+{name}" for name in unresolved_names)[:1000],
+            inline=False
+        )
     image = first_image_url(message)
     if image:
         embed.set_image(url=image)
@@ -182,6 +195,43 @@ def first_image_url(message: discord.Message):
         if content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS):
             return attachment.url
     return None
+
+async def get_evidence_participants(message: discord.Message):
+    participants = {str(message.author.id): message.author.display_name}
+    unresolved = []
+
+    for member in message.mentions:
+        if not member.bot:
+            participants[str(member.id)] = member.display_name
+
+    for name in extract_plus_names(message.content):
+        member = resolve_member_by_name(message.guild, name)
+        if member and not member.bot:
+            participants[str(member.id)] = member.display_name
+            continue
+
+        found = find_scout_by_name(name)
+        if found:
+            participants[str(found[0])] = found[1]
+            continue
+
+        unresolved.append(name)
+
+    return list(participants.items()), unresolved
+
+def extract_plus_names(text: str):
+    return re.findall(r"(?<!\S)\+([A-Za-z0-9_.-]{2,32})", text or "")
+
+def resolve_member_by_name(guild: discord.Guild, name: str):
+    target = normalize_name(name)
+    for member in guild.members:
+        names = [member.name, member.display_name, member.global_name or ""]
+        if any(normalize_name(candidate) == target for candidate in names):
+            return member
+    return None
+
+def normalize_name(name: str):
+    return "".join(ch.lower() for ch in name if ch.isalnum())
 
 async def get_review_channel(message: discord.Message):
     if EVIDENCE_REVIEW_CHANNEL_ID:

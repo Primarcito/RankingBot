@@ -58,6 +58,14 @@ def init_db():
                 review_message_id TEXT
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS evidence_participants (
+                message_id TEXT,
+                user_id TEXT,
+                username TEXT,
+                PRIMARY KEY (message_id, user_id)
+            )
+        """)
         c.execute("PRAGMA table_info(evidence_messages)")
         cols = [row[1] for row in c.fetchall()]
         if "status" not in cols:
@@ -112,8 +120,9 @@ def add_activity(user_id: str, username: str, actividad: str, cantidad: int):
         conn.commit()
     return total_puntos
 
-def create_evidence_review(message_id: str, user_id: str, username: str, actividad: str):
+def create_evidence_review(message_id: str, user_id: str, username: str, actividad: str, participants=None):
     ensure_scout(user_id, username)
+    participants = participants or [(user_id, username)]
     puntos_unit = get_puntos(actividad)
     fecha = datetime.utcnow().isoformat()
     with get_conn() as conn:
@@ -124,6 +133,16 @@ def create_evidence_review(message_id: str, user_id: str, username: str, activid
             )
         except sqlite3.IntegrityError:
             return 0
+        for participant_id, participant_name in participants:
+            conn.execute(
+                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                (str(participant_id), participant_name)
+            )
+            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
+            conn.execute(
+                "INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username) VALUES (?,?,?)",
+                (message_id, str(participant_id), participant_name)
+            )
         conn.commit()
     return puntos_unit
 
@@ -165,19 +184,40 @@ def approve_evidence(message_id: str):
         if not row or row[3] != "pending":
             return None
         user_id, actividad, puntos, _, review_message_id = row
-        scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
-        username = scout[0] if scout else user_id
-        conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + 1 WHERE user_id=?", (user_id,))
+        participants = conn.execute(
+            "SELECT user_id, username FROM evidence_participants WHERE message_id=?",
+            (message_id,)
+        ).fetchall()
+        if not participants:
+            scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
+            participants = [(user_id, scout[0] if scout else user_id)]
+
+        for participant_id, username in participants:
+            conn.execute(
+                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                (str(participant_id), username)
+            )
+            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (username, str(participant_id)))
+            conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + 1 WHERE user_id=?", (participant_id,))
+            conn.execute(
+                "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
+                (participant_id, username, actividad, 1, puntos, datetime.utcnow().isoformat(), "evidencia_aprobada")
+            )
         conn.execute(
             "UPDATE evidence_messages SET status='approved' WHERE message_id=?",
             (message_id,)
         )
-        conn.execute(
-            "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-            (user_id, username, actividad, 1, puntos, datetime.utcnow().isoformat(), "evidencia_aprobada")
-        )
         conn.commit()
     return user_id, actividad, puntos, review_message_id
+
+def find_scout_by_name(name: str):
+    target = normalize_name(name)
+    with get_conn() as conn:
+        rows = conn.execute("SELECT user_id, username FROM scouts").fetchall()
+    for user_id, username in rows:
+        if normalize_name(username) == target:
+            return user_id, username
+    return None
 
 def reject_evidence(message_id: str):
     with get_conn() as conn:
@@ -260,3 +300,6 @@ def get_nivel(puntos: int) -> tuple[str, str]:
         return "C", "Prioridad básica"
     else:
         return "Inactivo", "Sin prioridad"
+
+def normalize_name(name: str) -> str:
+    return "".join(ch.lower() for ch in name if ch.isalnum())
