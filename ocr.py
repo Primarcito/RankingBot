@@ -14,6 +14,37 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+OCR_CORRECTIONS = [
+    (r"Kill\s+De[a-z]{3,6}s?\b", "Kill Details"),
+    (r"Detal[li1]es", "Detalles"),
+    (r"asesin[a4][ft]o", "asesinato"),
+    (r"\bL(\s*assist)", r"1\1"),
+    (r"\bl(\s*assist)", r"1\1"),
+    (r"\b[O0](\s*assist)", r"0\1"),
+    (r"\b(\d)assist", r"\1 assist"),
+    (r"\bL(\s*ayuda)", r"1\1"),
+    (r"\bl(\s*ayuda)", r"1\1"),
+    (r"\b[O0](\s*ayuda)", r"0\1"),
+    (r"Kill\s+F[ao][mr][mne]e?", "Kill Fame"),
+    (r"Fama\s+de\s+asesina[ft]o", "Fama de asesinato"),
+    (r"You\s+ki[l1]{2,3}ed", "You killed"),
+    (r"Has\s+ma[ft]ado\s+a", "Has matado a"),
+    (r"^[&@#]\s*Kill", "Kill", re.MULTILINE),
+    (r"jugad\s*[o0]r", "jugador"),
+]
+
+
+def correct_ocr_text(text):
+    for correction in OCR_CORRECTIONS:
+        if len(correction) == 3:
+            pattern, replacement, flags = correction
+            text = re.sub(pattern, replacement, text, flags=flags)
+        else:
+            pattern, replacement = correction
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
 async def read_message_ocr(message):
     texts = []
     for attachment in message.attachments[:OCR_MAX_IMAGES]:
@@ -40,6 +71,7 @@ async def read_message_ocr(message):
 
 
 def suggest_activity_from_ocr(text):
+    text = correct_ocr_text(text)
     normalized = normalize_text(text)
     matches = {}
     for activity, keywords in OCR_RULES.items():
