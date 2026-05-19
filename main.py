@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from database import add_activity, init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, set_evidence_review_message, subtract_activity
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
-    DASHBOARD_CHANNEL_ID, INFO_RANKING_CHANNEL_ID, \
+    DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
 from views import DashboardView, EvidenceReviewView
@@ -43,8 +43,10 @@ async def on_ready():
     bot.add_view(DashboardView())
     for message_id in get_pending_evidence_message_ids():
         bot.add_view(EvidenceReviewView(message_id))
-    await tree.sync()
-    print(f"✅ Bot listo: {bot.user} | Comandos sincronizados")
+    guild = discord.Object(id=GUILD_ID)
+    tree.copy_global_to(guild=guild)
+    synced = await tree.sync(guild=guild)
+    print(f"✅ Bot listo: {bot.user} | Comandos sincronizados: {[cmd.name for cmd in synced]}")
 
 # ── /panel_scouts ─────────────────────────────────────────────────────────────
 
