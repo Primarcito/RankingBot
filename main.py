@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from database import add_activity, init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, set_evidence_review_message, subtract_activity
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
-    DASHBOARD_CHANNEL_ID, \
+    DASHBOARD_CHANNEL_ID, INFO_RANKING_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
 from views import DashboardView, EvidenceReviewView
@@ -283,7 +283,11 @@ async def info_ranking(interaction: discord.Interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
-    await interaction.channel.send(embed=build_info_ranking_embed())
+    channel = bot.get_channel(INFO_RANKING_CHANNEL_ID)
+    if not channel:
+        channel = await bot.fetch_channel(INFO_RANKING_CHANNEL_ID)
+
+    await channel.send(embed=build_info_ranking_embed())
     await interaction.response.send_message("Info publicada.", ephemeral=True)
 
 
