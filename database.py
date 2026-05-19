@@ -154,6 +154,35 @@ def set_evidence_review_message(message_id: str, review_message_id: str):
         )
         conn.commit()
 
+def add_evidence_participants(message_id: str, participants):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM evidence_messages WHERE message_id=?",
+            (message_id,)
+        ).fetchone()
+        if not row or row[0] != "pending":
+            return False
+        for participant_id, participant_name in participants:
+            conn.execute(
+                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                (str(participant_id), participant_name)
+            )
+            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
+            conn.execute(
+                "INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username) VALUES (?,?,?)",
+                (message_id, str(participant_id), participant_name)
+            )
+        conn.commit()
+    return True
+
+def get_evidence_participants(message_id: str):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT user_id, username FROM evidence_participants WHERE message_id=?",
+            (message_id,)
+        ).fetchall()
+    return rows
+
 def get_pending_evidence_message_ids():
     with get_conn() as conn:
         rows = conn.execute(

@@ -1,7 +1,7 @@
 import csv
 import io
 import discord
-from database import add_activity, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
+from database import add_activity, add_evidence_participants, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
 from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR
 from permissions import can_review_evidence, is_admin
 
@@ -280,8 +280,73 @@ class EvidenceReviewView(discord.ui.View):
     def __init__(self, evidence_message_id: str):
         super().__init__(timeout=None)
         self.evidence_message_id = evidence_message_id
+        self.add_item(EvidenceAddParticipantsButton(evidence_message_id))
         self.add_item(EvidenceApproveButton(evidence_message_id))
         self.add_item(EvidenceRejectButton(evidence_message_id))
+
+
+class EvidenceAddParticipantsButton(discord.ui.Button):
+    def __init__(self, evidence_message_id: str):
+        super().__init__(
+            label="Agregar personas",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"evidence_add_people:{evidence_message_id}"
+        )
+        self.evidence_message_id = evidence_message_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_review_evidence(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="Agregar personas",
+            description="Selecciona los usuarios que tambien reciben esta evidencia.",
+            color=COLOR_PANEL
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=EvidenceParticipantSelectView(self.evidence_message_id, interaction.message),
+            ephemeral=True
+        )
+
+
+class EvidenceParticipantSelectView(discord.ui.View):
+    def __init__(self, evidence_message_id: str, review_message: discord.Message):
+        super().__init__(timeout=60)
+        self.add_item(EvidenceParticipantSelect(evidence_message_id, review_message))
+
+
+class EvidenceParticipantSelect(discord.ui.UserSelect):
+    def __init__(self, evidence_message_id: str, review_message: discord.Message):
+        super().__init__(
+            placeholder="Arroba/agrega participantes",
+            min_values=1,
+            max_values=25,
+        )
+        self.evidence_message_id = evidence_message_id
+        self.review_message = review_message
+
+    async def callback(self, interaction: discord.Interaction):
+        participants = [
+            (str(user.id), getattr(user, "display_name", None) or user.global_name or user.name)
+            for user in self.values
+            if not user.bot
+        ]
+        if not participants:
+            await interaction.response.send_message("No selecciones bots.", ephemeral=True)
+            return
+
+        if not add_evidence_participants(self.evidence_message_id, participants):
+            await interaction.response.send_message("Evidencia ya revisada.", ephemeral=True)
+            return
+
+        embed = self.review_message.embeds[0]
+        rows = get_evidence_participants(self.evidence_message_id)
+        value = "\n".join(f"<@{user_id}>" for user_id, _ in rows[:25]) or "Sin participantes"
+        upsert_embed_field(embed, "Participantes", value[:1000])
+        await self.review_message.edit(embed=embed)
+        await interaction.response.send_message("Personas agregadas.", ephemeral=True)
 
 
 class EvidenceApproveButton(discord.ui.Button):
@@ -348,4 +413,12 @@ async def set_source_reaction(interaction: discord.Interaction, emoji: str):
         await source_message.add_reaction(emoji)
     except (discord.HTTPException, IndexError, ValueError, AttributeError):
         pass
+
+
+def upsert_embed_field(embed: discord.Embed, name: str, value: str):
+    for index, field in enumerate(embed.fields):
+        if field.name == name:
+            embed.set_field_at(index, name=name, value=value, inline=False)
+            return
+    embed.add_field(name=name, value=value, inline=False)
 
