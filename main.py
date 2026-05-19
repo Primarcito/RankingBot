@@ -82,6 +82,8 @@ async def on_message(message: discord.Message):
         try:
             ocr_text = await read_message_ocr(message)
             ocr_activity, ocr_hits, ocr_confidence = suggest_activity_from_ocr(ocr_text)
+            if ocr_confidence == "Sin texto legible":
+                ocr_text = ""
         except Exception as err:
             ocr_text = f"OCR error: {err}"
             print(f"[OCR ERROR] {err}")

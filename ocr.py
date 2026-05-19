@@ -103,7 +103,7 @@ def suggest_activity_from_ocr(text):
             matches[activity] = hits
 
     if not matches:
-        return None, [], "Baja"
+        return None, [], "Sin texto legible"
 
     if "kill_scout" in matches and "kill_pelea" in matches:
         assists_match = re.search(r"(\d+)\s*(?:assist|ayuda)", normalized)
