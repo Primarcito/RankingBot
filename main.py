@@ -9,13 +9,13 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from database import init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, set_evidence_review_message
+from database import add_activity, init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, set_evidence_review_message, subtract_activity
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
 from views import DashboardView, EvidenceReviewView
-from embeds import build_dashboard_embed
+from embeds import build_dashboard_embed, build_perfil_embed
 from permissions import is_admin
 from ocr import improve_confidence_for_channel, read_message_ocr, suggest_activity_from_ocr
 
@@ -270,6 +270,49 @@ async def dashboard_scouts(interaction: discord.Interaction):
     await interaction.response.send_message("Dashboard actualizado.", ephemeral=True)
 
 # ── Run ───────────────────────────────────────────────────────────────────────
+
+@tree.command(name="mi_ranking", description="Muestra tu perfil y puntos de scout")
+async def mi_ranking(interaction: discord.Interaction):
+    embed = build_perfil_embed(str(interaction.user.id), interaction.user.display_name)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="modificar_puntos", description="Suma o resta actividades a un scout")
+@app_commands.choices(actividad=ACT_CHOICES)
+async def modificar_puntos(
+    interaction: discord.Interaction,
+    usuario: discord.Member,
+    actividad: app_commands.Choice[str],
+    cantidad: int,
+):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    if cantidad == 0:
+        await interaction.response.send_message("Cantidad no puede ser 0.", ephemeral=True)
+        return
+
+    actividad_key = actividad.value
+    if cantidad > 0:
+        pts = add_activity(str(usuario.id), usuario.display_name, actividad_key, cantidad)
+        signo = "+"
+    else:
+        pts = subtract_activity(str(usuario.id), usuario.display_name, actividad_key, abs(cantidad))
+        signo = "-"
+
+    meta = ACTIVIDADES[actividad_key]
+    embed = discord.Embed(
+        description=(
+            f"{meta['emoji']} **{meta['label']}**\n"
+            f"Usuario: {usuario.mention}\n"
+            f"Cantidad: `{cantidad}`\n"
+            f"Puntos: `{signo}{pts}`"
+        ),
+        color=COLOR_SUCCESS if cantidad > 0 else COLOR_ERROR,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 if __name__ == "__main__":
     bot.run(TOKEN)
