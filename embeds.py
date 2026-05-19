@@ -124,7 +124,7 @@ def build_info_ranking_embed(limit: int = 10) -> discord.Embed:
             "**Party:** escribe los nombres con `+` en el mensaje.\n"
             "`+Sherlock22 +z1Bell +ParryEnjoyer`\n\n"
             "**Estados:** ⏳ pendiente  •  ✅ aprobada  •  ❌ rechazada\n"
-            "Si falta alguien, se puede agregar antes de aprobar."
+            "Se pueden agregar personas antes de que lo aprueben."
         ),
         inline=False,
     )
