@@ -102,6 +102,45 @@ def build_ranking_embed(limit: int = 15) -> discord.Embed:
     return embed
 
 
+def build_info_ranking_embed(limit: int = 10) -> discord.Embed:
+    scouts = get_all_scouts()
+    ranked = sorted(
+        [(row, calc_puntos_totales(row)) for row in scouts],
+        key=lambda item: item[1],
+        reverse=True,
+    )[:limit]
+
+    embed = discord.Embed(
+        title="📌 Reglas Rápidas del Ranking",
+        description="Sube evidencias en el canal correcto. Si se aprueban, suman puntos.",
+        color=COLOR_PANEL,
+    )
+    embed.add_field(
+        name="Guía",
+        value=(
+            "• Captura clara y sin repetir evidencia.\n"
+            "• Si hay party, escribe nombres con `+`.\n"
+            "• Ejemplo: `+Sherlock22 +z1Bell +ParryEnjoyer`\n"
+            "• ⏳ pendiente | ✅ aprobada | ❌ rechazada\n"
+            "• Un revisor puede agregar personas antes de aprobar."
+        ),
+        inline=False,
+    )
+
+    if ranked:
+        ranking = [
+            f"{_medal(pos)} **{row[1]}** — `{points} pts`"
+            for pos, (row, points) in enumerate(ranked, start=1)
+        ]
+        ranking_text = "\n".join(ranking)
+    else:
+        ranking_text = "Sin datos aun."
+
+    embed.add_field(name="Ranking general", value=ranking_text, inline=False)
+    embed.set_footer(text="Ranking Bot • Sistema de revisión")
+    return embed
+
+
 def build_perfil_embed(user_id: str, display_name: str) -> discord.Embed:
     scout = get_scout(user_id)
     if not scout:

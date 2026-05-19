@@ -15,7 +15,7 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLO
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
 from views import DashboardView, EvidenceReviewView
-from embeds import build_dashboard_embed, build_perfil_embed
+from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed
 from permissions import is_admin
 from ocr import improve_confidence_for_channel, read_message_ocr, suggest_activity_from_ocr
 
@@ -275,6 +275,16 @@ async def dashboard_scouts(interaction: discord.Interaction):
 async def mi_ranking(interaction: discord.Interaction):
     embed = build_perfil_embed(str(interaction.user.id), interaction.user.display_name)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="info_ranking", description="Publica la guía y ranking general")
+async def info_ranking(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    await interaction.channel.send(embed=build_info_ranking_embed())
+    await interaction.response.send_message("Info publicada.", ephemeral=True)
 
 
 @tree.command(name="modificar_puntos", description="Suma o resta actividades a un scout")
