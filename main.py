@@ -28,6 +28,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, application_id=int(APPLICATION_ID))
 tree = bot.tree
+COMMANDS_SYNCED = False
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -39,14 +40,24 @@ ACT_CHOICES = [
 
 @bot.event
 async def on_ready():
+    global COMMANDS_SYNCED
     init_db()
     bot.add_view(DashboardView())
     for message_id in get_pending_evidence_message_ids():
         bot.add_view(EvidenceReviewView(message_id))
-    guild = discord.Object(id=GUILD_ID)
-    tree.copy_global_to(guild=guild)
-    synced = await tree.sync(guild=guild)
-    print(f"✅ Bot listo: {bot.user} | Comandos sincronizados: {[cmd.name for cmd in synced]}")
+    if not COMMANDS_SYNCED:
+        guild = discord.Object(id=GUILD_ID)
+        commands_to_sync = list(tree.get_commands())
+        tree.clear_commands(guild=None)
+        await tree.sync()
+        tree.clear_commands(guild=guild)
+        for command in commands_to_sync:
+            tree.add_command(command, guild=guild)
+        synced = await tree.sync(guild=guild)
+        COMMANDS_SYNCED = True
+        print(f"✅ Bot listo: {bot.user} | Comandos sincronizados: {[cmd.name for cmd in synced]}")
+    else:
+        print(f"✅ Bot listo: {bot.user}")
 
 # ── /panel_scouts ─────────────────────────────────────────────────────────────
 
