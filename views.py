@@ -372,6 +372,7 @@ class EvidenceApproveButton(discord.ui.Button):
         embed.color = COLOR_SUCCESS
         embed.add_field(name="Estado", value=f"Aprobado por {interaction.user.mention}", inline=False)
         await interaction.response.edit_message(embed=embed, view=None)
+        await set_review_reaction(interaction, "\N{WHITE HEAVY CHECK MARK}")
         await set_source_reaction(interaction, "\N{WHITE HEAVY CHECK MARK}")
 
 
@@ -397,7 +398,17 @@ class EvidenceRejectButton(discord.ui.Button):
         embed.color = COLOR_ERROR
         embed.add_field(name="Estado", value=f"Rechazado por {interaction.user.mention}", inline=False)
         await interaction.response.edit_message(embed=embed, view=None)
+        await set_review_reaction(interaction, "\N{CROSS MARK}")
         await set_source_reaction(interaction, "\N{CROSS MARK}")
+
+
+async def set_review_reaction(interaction: discord.Interaction, emoji: str):
+    try:
+        await interaction.message.clear_reaction("\N{WHITE HEAVY CHECK MARK}")
+        await interaction.message.clear_reaction("\N{CROSS MARK}")
+        await interaction.message.add_reaction(emoji)
+    except discord.HTTPException:
+        pass
 
 
 async def set_source_reaction(interaction: discord.Interaction, emoji: str):
