@@ -45,6 +45,26 @@ def correct_ocr_text(text):
     return text
 
 
+def is_garbage_ocr(text):
+    if not text.strip():
+        return True
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return True
+
+    short_lines = sum(1 for line in lines if len(line) < 4)
+    if len(lines) > 3 and short_lines / len(lines) > 0.5:
+        return True
+
+    total_chars = sum(len(line) for line in lines)
+    real_chars = sum(1 for char in text if char.isalnum() or char == " ")
+    if total_chars > 0 and real_chars / total_chars < 0.4:
+        return True
+
+    return False
+
+
 async def read_message_ocr(message):
     texts = []
     for attachment in message.attachments[:OCR_MAX_IMAGES]:
@@ -72,6 +92,9 @@ async def read_message_ocr(message):
 
 def suggest_activity_from_ocr(text):
     text = correct_ocr_text(text)
+    if is_garbage_ocr(text):
+        return None, [], "Sin texto legible"
+
     normalized = normalize_text(text)
     matches = {}
     for activity, keywords in OCR_RULES.items():
@@ -100,7 +123,7 @@ def suggest_activity_from_ocr(text):
 
 def improve_confidence_for_channel(channel_activity, ocr_activity, ocr_hits):
     if not ocr_activity:
-        return channel_activity, [], "Baja"
+        return channel_activity, [], "Media"
     if ocr_activity == channel_activity:
         confidence = "Alta" if len(ocr_hits) >= 2 else "Media"
         return channel_activity, ocr_hits, confidence
