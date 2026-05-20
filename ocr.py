@@ -65,6 +65,19 @@ def is_garbage_ocr(text):
     return False
 
 
+def is_ineligible_ocr(text):
+    normalized = normalize_text(text)
+    return any(
+        marker in normalized
+        for marker in (
+            "ineligible",
+            "not eligible",
+            "no elegible",
+            "inelegible",
+        )
+    )
+
+
 async def read_message_ocr(message):
     texts = []
     for attachment in message.attachments[:OCR_MAX_IMAGES]:

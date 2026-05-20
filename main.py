@@ -9,15 +9,15 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from database import add_activity, init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, set_evidence_review_message, subtract_activity
+from database import add_activity, calc_puntos_totales, get_all_scouts, get_nivel, init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, reset_all, set_evidence_review_message, subtract_activity
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
-    EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS
+    EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID
 from views import DashboardView, EvidenceReviewView
 from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed
 from permissions import is_admin
-from ocr import improve_confidence_for_channel, read_message_ocr, suggest_activity_from_ocr
+from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -96,7 +96,7 @@ async def on_message(message: discord.Message):
         try:
             ocr_text = await read_message_ocr(message)
             ocr_activity, ocr_hits, ocr_confidence = suggest_activity_from_ocr(ocr_text)
-            if ocr_confidence == "Sin texto legible":
+            if ocr_confidence == "Sin texto legible" or is_ineligible_ocr(ocr_text):
                 ocr_text = ""
         except Exception as err:
             ocr_text = f"OCR error: {err}"
@@ -339,6 +339,52 @@ async def modificar_puntos(
         color=COLOR_SUCCESS if cantidad > 0 else COLOR_ERROR,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="export_ranking", description="Exporta el ranking como CSV")
+async def export_ranking(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "nivel", "beneficio"])
+
+    for row in get_all_scouts():
+        pts = calc_puntos_totales(row)
+        nivel, beneficio = get_nivel(pts)
+        writer.writerow([*row, pts, nivel, beneficio])
+
+    output.seek(0)
+    file = discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename="ranking_scouts.csv")
+    await interaction.response.send_message(file=file, ephemeral=True)
+
+
+@tree.command(name="reset_ranking", description="Resetea todos los puntos del ranking")
+async def reset_ranking(interaction: discord.Interaction, confirmacion: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    if confirmacion != "RESET":
+        await interaction.response.send_message("Escribe `RESET` en confirmacion para resetear el ranking.", ephemeral=True)
+        return
+
+    reset_all()
+    await send_log(f"Ranking reseteado por {interaction.user.mention}.")
+    await interaction.response.send_message("Ranking reseteado.", ephemeral=True)
+
+
+async def send_log(text: str):
+    if not LOG_CHANNEL_ID:
+        return
+
+    channel = bot.get_channel(LOG_CHANNEL_ID)
+    if not channel:
+        channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+
+    await channel.send(text)
 
 
 if __name__ == "__main__":
