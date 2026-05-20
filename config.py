@@ -29,6 +29,12 @@ DASHBOARD_CHANNEL_ID = 1506054441558605914
 INFO_RANKING_CHANNEL_ID = 1506143923490258964
 LOG_CHANNEL_ID = 0
 
+# Reset semanal del ranking. 0 = lunes, 6 = domingo.
+AUTO_RESET_ENABLED = True
+AUTO_RESET_WEEKDAY_UTC = 0
+AUTO_RESET_HOUR_UTC = 10
+AUTO_RESET_MINUTE_UTC = 0
+
 EVIDENCE_CHANNEL_IDS = {
     1505954534852268214: "kill_scout",
     1505955261930541166: "limpieza_aspecto",
@@ -49,7 +55,7 @@ EVIDENCE_CHANNELS = {
     "scouteo": "scouteo",
     "mapeo": "mapeo",
 }
-IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 
 OCR_ENABLED = True
 OCR_MAX_IMAGES = 1

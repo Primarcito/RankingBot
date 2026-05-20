@@ -212,7 +212,8 @@ def approve_evidence(message_id: str):
         ).fetchone()
         if not row or row[3] != "pending":
             return None
-        user_id, actividad, puntos, _, review_message_id = row
+        user_id, actividad, _, _, review_message_id = row
+        puntos = get_puntos(actividad)
         participants = conn.execute(
             "SELECT user_id, username FROM evidence_participants WHERE message_id=?",
             (message_id,)

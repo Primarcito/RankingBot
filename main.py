@@ -4,6 +4,7 @@ import io
 import asyncio
 import traceback
 import re
+from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -13,7 +14,8 @@ from database import add_activity, calc_puntos_totales, get_all_scouts, get_nive
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
-    EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID
+    EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
+    AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC
 from views import DashboardView, EvidenceReviewView
 from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed
 from permissions import is_admin
@@ -29,6 +31,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, application_id=int(APPLICATION_ID))
 tree = bot.tree
 COMMANDS_SYNCED = False
+RESET_TASK_STARTED = False
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -40,7 +43,7 @@ ACT_CHOICES = [
 
 @bot.event
 async def on_ready():
-    global COMMANDS_SYNCED
+    global COMMANDS_SYNCED, RESET_TASK_STARTED
     init_db()
     bot.add_view(DashboardView())
     for message_id in get_pending_evidence_message_ids():
@@ -59,6 +62,10 @@ async def on_ready():
     else:
         print(f"✅ Bot listo: {bot.user}")
 
+    if AUTO_RESET_ENABLED and not RESET_TASK_STARTED:
+        bot.loop.create_task(weekly_reset_loop())
+        RESET_TASK_STARTED = True
+
 # ── /panel_scouts ─────────────────────────────────────────────────────────────
 
 @bot.event
@@ -73,8 +80,8 @@ async def on_message(message: discord.Message):
         print("[EVIDENCE] ignorado: canal/categoria no coincide")
         return
 
-    if not has_image(message) and not message.content.strip():
-        print("[EVIDENCE] ignorado: sin imagen/texto")
+    if not has_image(message):
+        print("[EVIDENCE] ignorado: sin imagen")
         return
 
     analyzing_embed = discord.Embed(
@@ -195,19 +202,22 @@ def activity_from_text(text: str):
 
 def has_image(message: discord.Message):
     for attachment in message.attachments:
-        content_type = attachment.content_type or ""
-        filename = attachment.filename.lower()
-        if content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS):
+        if is_supported_image(attachment):
             return True
     return False
 
 def first_image_url(message: discord.Message):
     for attachment in message.attachments:
-        content_type = attachment.content_type or ""
-        filename = attachment.filename.lower()
-        if content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS):
+        if is_supported_image(attachment):
             return attachment.url
     return None
+
+def is_supported_image(attachment: discord.Attachment):
+    content_type = attachment.content_type or ""
+    filename = attachment.filename.lower()
+    if content_type == "image/gif" or filename.endswith(".gif"):
+        return False
+    return content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS)
 
 async def get_evidence_participants(message: discord.Message):
     participants = {str(message.author.id): message.author.display_name}
@@ -264,6 +274,11 @@ async def dashboard_scouts(interaction: discord.Interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
+    await publish_or_update_dashboard()
+    await interaction.response.send_message("Dashboard actualizado.", ephemeral=True)
+
+
+async def publish_or_update_dashboard():
     channel = bot.get_channel(DASHBOARD_CHANNEL_ID)
     if not channel:
         channel = await bot.fetch_channel(DASHBOARD_CHANNEL_ID)
@@ -279,8 +294,6 @@ async def dashboard_scouts(interaction: discord.Interaction):
         await dashboard_msg.edit(embed=embed, view=DashboardView())
     else:
         await channel.send(embed=embed, view=DashboardView())
-
-    await interaction.response.send_message("Dashboard actualizado.", ephemeral=True)
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
@@ -372,6 +385,7 @@ async def reset_ranking(interaction: discord.Interaction, confirmacion: str):
         return
 
     reset_all()
+    await publish_or_update_dashboard()
     await send_log(f"Ranking reseteado por {interaction.user.mention}.")
     await interaction.response.send_message("Ranking reseteado.", ephemeral=True)
 
@@ -385,6 +399,36 @@ async def send_log(text: str):
         channel = await bot.fetch_channel(LOG_CHANNEL_ID)
 
     await channel.send(text)
+
+
+async def weekly_reset_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        target = next_weekly_reset_at()
+        wait_seconds = max(1, (target - datetime.now(timezone.utc)).total_seconds())
+        print(f"[RESET] Proximo reset ranking: {target.isoformat()}")
+        await asyncio.sleep(wait_seconds)
+        try:
+            reset_all()
+            await publish_or_update_dashboard()
+            await send_log("Reset semanal del ranking ejecutado automaticamente.")
+        except Exception as err:
+            print(f"[RESET ERROR] {err}")
+
+
+def next_weekly_reset_at():
+    now = datetime.now(timezone.utc)
+    target = now.replace(
+        hour=AUTO_RESET_HOUR_UTC,
+        minute=AUTO_RESET_MINUTE_UTC,
+        second=0,
+        microsecond=0,
+    )
+    days_ahead = (AUTO_RESET_WEEKDAY_UTC - target.weekday()) % 7
+    target = target + timedelta(days=days_ahead)
+    if target <= now:
+        target = target + timedelta(days=7)
+    return target
 
 
 if __name__ == "__main__":
