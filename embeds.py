@@ -76,46 +76,81 @@ def build_dashboard_embed() -> discord.Embed:
     return embed
 
 
-def build_ranking_embed(limit: int = 15) -> discord.Embed:
+def get_ranked_scouts():
     scouts = get_all_scouts()
-    ranked = sorted(
+    return sorted(
         [(row, calc_puntos_totales(row)) for row in scouts],
         key=lambda item: item[1],
         reverse=True,
-    )[:limit]
+    )
+
+
+def build_ranking_embed(limit: int = 15, page: int = 0, per_page: int | None = None) -> discord.Embed:
+    scouts = get_all_scouts()
+    ranked_all = get_ranked_scouts()
+    if per_page is None:
+        ranked = ranked_all[:limit]
+        start_pos = 1
+        page_text = None
+    else:
+        page = max(0, page)
+        start = page * per_page
+        ranked = ranked_all[start:start + per_page]
+        start_pos = start + 1
+        total_pages = max(1, (len(ranked_all) + per_page - 1) // per_page)
+        page_text = f"Pagina {page + 1}/{total_pages}"
 
     embed = discord.Embed(title="🏆 Ranking Scouts - TyrannT", color=COLOR_RANKING)
     if not ranked:
         embed.description = "Sin datos aun."
+        if page_text:
+            embed.set_footer(text=f"{page_text} - Total scouts: {len(scouts)}")
         return embed
 
-    top_points = ranked[0][1] or 1
+    top_points = ranked_all[0][1] or 1
     lines = []
-    for pos, (row, points) in enumerate(ranked, start=1):
+    for pos, (row, points) in enumerate(ranked, start=start_pos):
         nivel, _ = get_nivel(points)
         lines.append(
             f"{_medal(pos)} **{row[1]}**\n"
             f"  {_nivel_badge(nivel)} {nivel} `{_bar(points, top_points)}` **{points} pts**"
         )
     embed.description = "\n".join(lines)
-    embed.set_footer(text=f"Total scouts: {len(scouts)}")
+    if page_text:
+        embed.set_footer(text=f"{page_text} - Total scouts: {len(scouts)}")
+    else:
+        embed.set_footer(text=f"Total scouts: {len(scouts)}")
     return embed
 
 
-def build_info_ranking_embed(limit: int = 10) -> discord.Embed:
+def build_ranking_page_count(per_page: int = 10) -> int:
+    total = len(get_ranked_scouts())
+    return max(1, (total + per_page - 1) // per_page)
+
+
+def build_info_ranking_embed() -> discord.Embed:
     scouts = get_all_scouts()
-    ranked_all = sorted(
-        [(row, calc_puntos_totales(row)) for row in scouts],
-        key=lambda item: item[1],
-        reverse=True,
-    )
-    ranked = ranked_all[:limit]
+    points_config = {activity: points for activity, points in get_all_config()}
 
     embed = discord.Embed(
         title="🏆 Ranking de Evidencias",
-        description="Sistema de puntos por evidencias aprobadas.",
+        description="Panel publico del ranking de evidencias aprobadas.",
         color=COLOR_RANKING,
     )
+    embed.add_field(
+        name="📊 Resumen",
+        value=(
+            f"👥 Scouts registrados: **{len(scouts)}**\n"
+            f"📋 Evidencias hoy: **{get_today_evidence_count()}**\n"
+            f"⏳ Pendientes revision: **{get_pending_count()}**"
+        ),
+        inline=False,
+    )
+    activities = [
+        f"{meta['emoji']} **{meta['label']}** - `{points_config.get(key, 0)} pt`"
+        for key, meta in ACTIVIDADES.items()
+    ]
+    embed.add_field(name="🎯 Actividades", value="\n".join(activities), inline=False)
     embed.add_field(
         name="📌 Guía rápida",
         value=(
@@ -128,20 +163,7 @@ def build_info_ranking_embed(limit: int = 10) -> discord.Embed:
         ),
         inline=False,
     )
-
-    if ranked:
-        top_points = ranked[0][1] or 1
-        ranking = [
-            f"{_medal(pos)} **{row[1]}**\n"
-            f"`{_bar(points, top_points, 10)}` **{points} pts**"
-            for pos, (row, points) in enumerate(ranked, start=1)
-        ]
-        ranking_text = "\n".join(ranking)
-    else:
-        ranking_text = "Sin datos aún. Las evidencias aprobadas aparecerán aquí."
-
-    embed.add_field(name="👑 Ranking general", value=ranking_text, inline=False)
-    embed.set_footer(text=f"Ranking Bot • {len(scouts)} jugadores registrados")
+    embed.set_footer(text="Usa los botones de abajo - respuestas privadas")
     return embed
 
 

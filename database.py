@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import unicodedata
 from datetime import datetime
 
 DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
@@ -74,13 +75,14 @@ def init_db():
             c.execute("ALTER TABLE evidence_messages ADD COLUMN review_message_id TEXT")
         # Valores por defecto de configuración
         defaults = [
-            ("kill_scout", 2),
-            ("kill_pelea", 3),
+            ("kill_scout", 1),
+            ("kill_pelea", 1),
             ("limpieza_aspecto", 1),
-            ("scouteo", 2),
+            ("scouteo", 1),
             ("mapeo", 1),
         ]
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
+        c.executemany("UPDATE config SET puntos=? WHERE actividad=?", [(points, activity) for activity, points in defaults])
         conn.commit()
 
 # ── Scouts ──────────────────────────────────────────────────────────────────
@@ -332,4 +334,5 @@ def get_nivel(puntos: int) -> tuple[str, str]:
         return "Inactivo", "Sin prioridad"
 
 def normalize_name(name: str) -> str:
-    return "".join(ch.lower() for ch in name if ch.isalnum())
+    text = unicodedata.normalize("NFKD", str(name or ""))
+    return "".join(ch.lower() for ch in text if ch.isalnum())

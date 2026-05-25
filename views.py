@@ -2,7 +2,7 @@ import csv
 import io
 import discord
 from database import add_activity, add_evidence_participants, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
-from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR
+from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, DASHBOARD_CHANNEL_ID
 from permissions import can_review_evidence, is_admin
 
 # ── Panel de actividades ──────────────────────────────────────────────────────
@@ -254,6 +254,71 @@ class DashboardView(discord.ui.View):
         await interaction.response.send_message(embed=embed, view=ResetView(), ephemeral=True)
 
 
+class InfoRankingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Mi ranking", style=discord.ButtonStyle.secondary, custom_id="info_ranking_profile", row=0)
+    async def profile(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from embeds import build_perfil_embed
+
+        await interaction.response.send_message(
+            embed=build_perfil_embed(str(interaction.user.id), interaction.user.display_name),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Ranking general", style=discord.ButtonStyle.primary, custom_id="info_ranking_general", row=0)
+    async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from embeds import build_ranking_embed
+
+        await interaction.response.send_message(
+            embed=build_ranking_embed(page=0, per_page=10),
+            view=RankingPaginationView(page=0),
+            ephemeral=True,
+        )
+
+
+class RankingPaginationView(discord.ui.View):
+    def __init__(self, page: int = 0, per_page: int = 10):
+        super().__init__(timeout=180)
+        self.page = page
+        self.per_page = per_page
+        self.update_button_states()
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, custom_id="ranking_page_prev")
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Siguiente", style=discord.ButtonStyle.secondary, custom_id="ranking_page_next")
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.total_pages() - 1, self.page + 1)
+        await self.refresh(interaction)
+
+    async def refresh(self, interaction: discord.Interaction):
+        from embeds import build_ranking_embed
+
+        self.update_button_states()
+        await interaction.response.edit_message(
+            embed=build_ranking_embed(page=self.page, per_page=self.per_page),
+            view=self,
+        )
+
+    def update_button_states(self):
+        total_pages = self.total_pages()
+        self.page = min(max(0, self.page), total_pages - 1)
+        for child in self.children:
+            if child.custom_id == "ranking_page_prev":
+                child.disabled = self.page <= 0
+            elif child.custom_id == "ranking_page_next":
+                child.disabled = self.page >= total_pages - 1
+
+    def total_pages(self):
+        from embeds import build_ranking_page_count
+
+        return build_ranking_page_count(self.per_page)
+
+
 # ── Confirmación de Reset ─────────────────────────────────────────────────────
 
 class ResetView(discord.ui.View):
@@ -274,6 +339,121 @@ class ResetView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(description="Reset cancelado.", color=COLOR_ERROR)
         await interaction.response.edit_message(embed=embed, view=None)
+
+
+class EvidenceAuthorConfirmView(discord.ui.View):
+    def __init__(
+        self,
+        evidence_message_id: str,
+        author_id: str,
+        suggestions: list[dict],
+        review_message: discord.Message,
+    ):
+        super().__init__(timeout=600)
+        self.evidence_message_id = evidence_message_id
+        self.author_id = str(author_id)
+        self.suggestions = dedupe_suggestions_by_user(suggestions)
+        self.selected_user_ids = {suggestion["user_id"] for suggestion in self.suggestions}
+        self.review_message = review_message
+
+        if self.suggestions:
+            self.add_item(EvidenceSuggestionSelect(self.suggestions))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if str(interaction.user.id) == self.author_id:
+            return True
+
+        await interaction.response.send_message(
+            "Solo quien subio la evidencia puede confirmar estos participantes.",
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(label="Confirmar seleccion", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        selected = [
+            suggestion
+            for suggestion in self.suggestions
+            if suggestion["user_id"] in self.selected_user_ids
+        ]
+        participants = [
+            (suggestion["user_id"], suggestion["display_name"])
+            for suggestion in selected
+        ]
+
+        if participants and not add_evidence_participants(self.evidence_message_id, participants):
+            await interaction.response.send_message("La evidencia ya fue revisada.", ephemeral=True)
+            return
+
+        if participants:
+            await refresh_review_participants(
+                self.review_message,
+                self.evidence_message_id,
+                remove_suggestion_field=True,
+                confirmation_text=f"Confirmado por {interaction.user.mention}",
+            )
+            result = "\n".join(f"<@{user_id}>" for user_id, _ in participants[:25])
+        else:
+            await refresh_review_participants(
+                self.review_message,
+                self.evidence_message_id,
+                remove_suggestion_field=True,
+                confirmation_text=f"Sin sugerencias confirmadas por {interaction.user.mention}",
+            )
+            result = "No se agrego ningun participante sugerido."
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.color = COLOR_SUCCESS if participants else COLOR_WARNING
+        upsert_embed_field(embed, "Resultado", result[:1000])
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="No son esas", style=discord.ButtonStyle.secondary)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await refresh_review_participants(
+            self.review_message,
+            self.evidence_message_id,
+            remove_suggestion_field=True,
+            confirmation_text=f"Sugerencias descartadas por {interaction.user.mention}",
+        )
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.color = COLOR_WARNING
+        upsert_embed_field(
+            embed,
+            "Resultado",
+            "No se agregaron sugerencias. El equipo de revision puede corregirlo manualmente.",
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class EvidenceSuggestionSelect(discord.ui.Select):
+    def __init__(self, suggestions: list[dict]):
+        options = []
+        for suggestion in suggestions[:25]:
+            raw_names = ", ".join(f"+{name}" for name in suggestion["raw_names"][:3])
+            label = truncate_text(f"{raw_names} -> {suggestion['display_name']}", 100)
+            description = truncate_text(
+                f"{suggestion['score']}% coincidencia desde {suggestion['source']}",
+                100,
+            )
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=suggestion["user_id"],
+                    description=description,
+                    default=True,
+                )
+            )
+
+        super().__init__(
+            placeholder="Desmarca personas si no corresponden",
+            min_values=0,
+            max_values=max(1, len(options)),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_user_ids = set(self.values)
+        await interaction.response.defer()
 
 
 class EvidenceReviewView(discord.ui.View):
@@ -341,11 +521,7 @@ class EvidenceParticipantSelect(discord.ui.UserSelect):
             await interaction.response.send_message("Evidencia ya revisada.", ephemeral=True)
             return
 
-        embed = self.review_message.embeds[0]
-        rows = get_evidence_participants(self.evidence_message_id)
-        value = "\n".join(f"<@{user_id}>" for user_id, _ in rows[:25]) or "Sin participantes"
-        upsert_embed_field(embed, "Participantes", value[:1000])
-        await self.review_message.edit(embed=embed)
+        await refresh_review_participants(self.review_message, self.evidence_message_id)
         await interaction.response.send_message("Personas agregadas.", ephemeral=True)
 
 
@@ -432,4 +608,76 @@ def upsert_embed_field(embed: discord.Embed, name: str, value: str):
             embed.set_field_at(index, name=name, value=value, inline=False)
             return
     embed.add_field(name=name, value=value, inline=False)
+
+
+def remove_embed_field(embed: discord.Embed, name: str):
+    for index, field in enumerate(embed.fields):
+        if field.name == name:
+            embed.remove_field(index)
+            return
+
+
+async def refresh_review_participants(
+    review_message: discord.Message,
+    evidence_message_id: str,
+    remove_suggestion_field: bool = False,
+    confirmation_text: str | None = None,
+):
+    embed = review_message.embeds[0]
+    rows = get_evidence_participants(evidence_message_id)
+    value = "\n".join(f"<@{user_id}>" for user_id, _ in rows[:25]) or "Sin participantes"
+    upsert_embed_field(embed, "Participantes", value[:1000])
+    if remove_suggestion_field:
+        remove_embed_field(embed, "Sugerencias por confirmar")
+    if confirmation_text:
+        upsert_embed_field(embed, "Confirmacion participantes", confirmation_text[:1000])
+    await review_message.edit(embed=embed)
+
+
+def dedupe_suggestions_by_user(suggestions: list[dict]):
+    grouped = {}
+    for suggestion in suggestions:
+        user_id = str(suggestion["user_id"])
+        current = grouped.get(user_id)
+        if not current:
+            grouped[user_id] = {
+                "user_id": user_id,
+                "display_name": suggestion["display_name"],
+                "score": suggestion["score"],
+                "source": suggestion["source"],
+                "raw_names": [suggestion["raw"]],
+            }
+            continue
+
+        current["raw_names"].append(suggestion["raw"])
+        if suggestion["score"] > current["score"]:
+            current["score"] = suggestion["score"]
+            current["source"] = suggestion["source"]
+            current["display_name"] = suggestion["display_name"]
+    return list(grouped.values())[:25]
+
+
+def truncate_text(text: str, max_len: int):
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+async def refresh_dashboard_message(interaction: discord.Interaction):
+    if not DASHBOARD_CHANNEL_ID:
+        return
+
+    from embeds import build_dashboard_embed
+
+    channel = interaction.client.get_channel(DASHBOARD_CHANNEL_ID)
+    if not channel:
+        try:
+            channel = await interaction.client.fetch_channel(DASHBOARD_CHANNEL_ID)
+        except discord.HTTPException:
+            return
+
+    async for msg in channel.history(limit=20):
+        if msg.author.id == interaction.client.user.id and msg.embeds and "Dashboard Scouts" in (msg.embeds[0].title or ""):
+            await msg.edit(embed=build_dashboard_embed(), view=DashboardView())
+            return
 
