@@ -6,6 +6,14 @@ from datetime import datetime
 DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "scouts.db")
+DEFAULT_ACTIVITY_POINTS = {
+    "kill_scout": 2,
+    "kill_pelea": 3,
+    "limpieza_aspecto": 1,
+    "scouteo": 2,
+    "mapeo": 1,
+}
+CONFIG_REPAIR_MARKER = "__repair_points_config_2026_05_25"
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
@@ -74,16 +82,41 @@ def init_db():
         if "review_message_id" not in cols:
             c.execute("ALTER TABLE evidence_messages ADD COLUMN review_message_id TEXT")
         # Valores por defecto de configuración
-        defaults = [
-            ("kill_scout", 1),
-            ("kill_pelea", 1),
-            ("limpieza_aspecto", 1),
-            ("scouteo", 1),
-            ("mapeo", 1),
-        ]
+        defaults = list(DEFAULT_ACTIVITY_POINTS.items())
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
-        c.executemany("UPDATE config SET puntos=? WHERE actividad=?", [(points, activity) for activity, points in defaults])
+        repair_points_config_if_reset(c)
         conn.commit()
+
+def repair_points_config_if_reset(cursor):
+    marker = cursor.execute(
+        "SELECT puntos FROM config WHERE actividad=?",
+        (CONFIG_REPAIR_MARKER,)
+    ).fetchone()
+    if marker:
+        return
+
+    activity_keys = tuple(DEFAULT_ACTIVITY_POINTS.keys())
+    placeholders = ",".join("?" for _ in activity_keys)
+    rows = cursor.execute(
+        f"SELECT actividad, puntos FROM config WHERE actividad IN ({placeholders})",
+        activity_keys,
+    ).fetchall()
+    current_points = {activity: points for activity, points in rows}
+    was_reset_to_one = (
+        all(activity in current_points for activity in DEFAULT_ACTIVITY_POINTS)
+        and all(current_points[activity] == 1 for activity in DEFAULT_ACTIVITY_POINTS)
+    )
+
+    if was_reset_to_one:
+        cursor.executemany(
+            "UPDATE config SET puntos=? WHERE actividad=?",
+            [(points, activity) for activity, points in DEFAULT_ACTIVITY_POINTS.items()]
+        )
+
+    cursor.execute(
+        "INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)",
+        (CONFIG_REPAIR_MARKER, 1)
+    )
 
 # ── Scouts ──────────────────────────────────────────────────────────────────
 
@@ -304,7 +337,10 @@ def set_puntos(actividad: str, puntos: int):
 
 def get_all_config():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM config").fetchall()
+        rows = conn.execute(
+            "SELECT actividad, puntos FROM config WHERE actividad != ?",
+            (CONFIG_REPAIR_MARKER,)
+        ).fetchall()
     return rows
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
