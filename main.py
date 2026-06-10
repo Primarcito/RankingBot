@@ -36,6 +36,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, application_id=int(APPLI
 tree = bot.tree
 COMMANDS_SYNCED = False
 RESET_TASK_STARTED = False
+AURA_TAUNT_RESPONSE = "RankingBot confirma: el aura se farmea, la envidia se nota. Sube evidencia o vuelve a zona azul."
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -77,6 +78,12 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
+
+    if should_reply_to_aura_taunt(message.content):
+        try:
+            await message.reply(AURA_TAUNT_RESPONSE, mention_author=True)
+        except discord.HTTPException:
+            pass
 
     print(f"[MSG] guild={message.guild.id} channel={message.channel.id} category={message.channel.category_id} attachments={len(message.attachments)}")
 
@@ -212,6 +219,10 @@ def get_evidence_activity(message: discord.Message):
         if key in channel_name:
             return actividad
     return activity_from_text(message.content)
+
+def should_reply_to_aura_taunt(text: str):
+    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    return "aura bot" in normalized or "farmeaste aura" in normalized
 
 def clean_channel_name(name: str):
     return "".join(ch.lower() if ch.isalnum() else " " for ch in name)
