@@ -12,7 +12,21 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from database import add_activity, calc_puntos_totales, get_all_scouts, get_nivel, init_db, create_evidence_review, find_scout_by_name, get_pending_evidence_message_ids, reset_all, set_evidence_review_message, subtract_activity
+from database import (
+    add_activity,
+    calc_puntos_totales,
+    create_evidence_review,
+    find_scout_by_name,
+    get_all_scouts,
+    get_bot_state,
+    get_nivel,
+    get_pending_evidence_message_ids,
+    init_db,
+    reset_all,
+    set_bot_state,
+    set_evidence_review_message,
+    subtract_activity,
+)
 from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     WEEKLY_EXPORT_CHANNEL_ID, \
@@ -36,7 +50,11 @@ bot = commands.Bot(command_prefix="!", intents=intents, application_id=int(APPLI
 tree = bot.tree
 COMMANDS_SYNCED = False
 RESET_TASK_STARTED = False
+TAUNT_TASK_STARTED = False
 AURA_TAUNT_RESPONSE = "RankingBot confirma: el aura se farmea, la envidia se nota. Sube evidencia o vuelve a zona azul."
+AURA_TAUNT_TARGETS = (
+    (1435778824775274581, 1514156352463700051),
+)
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -48,7 +66,7 @@ ACT_CHOICES = [
 
 @bot.event
 async def on_ready():
-    global COMMANDS_SYNCED, RESET_TASK_STARTED
+    global COMMANDS_SYNCED, RESET_TASK_STARTED, TAUNT_TASK_STARTED
     init_db()
     bot.add_view(DashboardView())
     bot.add_view(InfoRankingView())
@@ -71,6 +89,10 @@ async def on_ready():
     if AUTO_RESET_ENABLED and not RESET_TASK_STARTED:
         bot.loop.create_task(weekly_reset_loop())
         RESET_TASK_STARTED = True
+
+    if not TAUNT_TASK_STARTED:
+        bot.loop.create_task(reply_to_pending_aura_taunts())
+        TAUNT_TASK_STARTED = True
 
 # ── /panel_scouts ─────────────────────────────────────────────────────────────
 
@@ -202,6 +224,36 @@ async def on_message(message: discord.Message):
     await asyncio.sleep(60)
     await analyzing_msg.delete()
 
+
+# ── Bromas / respuestas automáticas ───────────────────────────────────────────
+
+async def reply_to_pending_aura_taunts():
+    for channel_id, message_id in AURA_TAUNT_TARGETS:
+        state_key = f"aura_taunt_reply:{message_id}"
+        if get_bot_state(state_key):
+            continue
+
+        try:
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            message = await channel.fetch_message(message_id)
+            await message.reply(AURA_TAUNT_RESPONSE, mention_author=True)
+            set_bot_state(state_key, datetime.now(timezone.utc).isoformat())
+            print(f"[TAUNT] Respuesta enviada a mensaje {message_id}")
+        except discord.NotFound:
+            print(f"[TAUNT] Mensaje no encontrado: {message_id}")
+        except discord.Forbidden:
+            print(f"[TAUNT] Sin permisos para responder en canal {channel_id}")
+        except discord.HTTPException as err:
+            print(f"[TAUNT ERROR] {message_id}: {err}")
+
+
+def should_reply_to_aura_taunt(text: str):
+    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    return "aura bot" in normalized or "farmeaste aura" in normalized
+
+
+# ── Evidencias ────────────────────────────────────────────────────────────────
+
 def get_evidence_activity(message: discord.Message):
     if message.channel.id in EVIDENCE_CHANNEL_IDS:
         return EVIDENCE_CHANNEL_IDS[message.channel.id]
@@ -219,10 +271,6 @@ def get_evidence_activity(message: discord.Message):
         if key in channel_name:
             return actividad
     return activity_from_text(message.content)
-
-def should_reply_to_aura_taunt(text: str):
-    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
-    return "aura bot" in normalized or "farmeaste aura" in normalized
 
 def clean_channel_name(name: str):
     return "".join(ch.lower() if ch.isalnum() else " " for ch in name)

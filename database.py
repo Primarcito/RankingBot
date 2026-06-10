@@ -75,6 +75,12 @@ def init_db():
                 PRIMARY KEY (message_id, user_id)
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         c.execute("PRAGMA table_info(evidence_messages)")
         cols = [row[1] for row in c.fetchall()]
         if "status" not in cols:
@@ -342,6 +348,19 @@ def get_all_config():
             (CONFIG_REPAIR_MARKER,)
         ).fetchall()
     return rows
+
+def get_bot_state(key: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM bot_state WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+def set_bot_state(key: str, value: str):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        conn.commit()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
