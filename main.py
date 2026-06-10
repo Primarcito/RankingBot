@@ -4,8 +4,6 @@ import io
 import asyncio
 import traceback
 import re
-import unicodedata
-from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
@@ -14,16 +12,23 @@ from dotenv import load_dotenv
 
 from database import (
     add_activity,
+    add_evidence_participants,
+    add_scout_alias,
     calc_puntos_totales,
     create_evidence_review,
-    find_scout_by_name,
+    get_evidence_by_thread,
+    get_evidence_participants as db_get_evidence_participants,
+    get_evidence_review_message_id,
     get_all_scouts,
     get_bot_state,
     get_nivel,
     get_pending_evidence_message_ids,
+    get_scout_aliases,
     init_db,
+    remove_scout_alias,
     reset_all,
     set_bot_state,
+    set_evidence_thread,
     set_evidence_review_message,
     subtract_activity,
 )
@@ -33,10 +38,19 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLO
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
     AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC
-from views import DashboardView, EvidenceAuthorConfirmView, EvidenceReviewView, InfoRankingView
+from views import (
+    DashboardView,
+    EvidenceAuthorConfirmView,
+    EvidenceReviewView,
+    EvidenceReviewerSuggestionConfirmView,
+    InfoRankingView,
+    build_participant_resolution_embed,
+    refresh_review_participants,
+)
 from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed
-from permissions import is_admin
+from permissions import can_review_member, is_admin
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
+import participants as participant_tools
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -106,6 +120,9 @@ async def on_message(message: discord.Message):
             await message.reply(AURA_TAUNT_RESPONSE, mention_author=True)
         except discord.HTTPException:
             pass
+
+    if await handle_evidence_thread_message(message):
+        return
 
     print(f"[MSG] guild={message.guild.id} channel={message.channel.id} category={message.channel.category_id} attachments={len(message.attachments)}")
 
@@ -189,7 +206,7 @@ async def on_message(message: discord.Message):
     if suggested_participants:
         embed.add_field(
             name="Sugerencias por confirmar",
-            value=format_participant_suggestions(suggested_participants)[:1000],
+            value=participant_tools.format_participant_suggestions(suggested_participants)[:1000],
             inline=False
         )
     image = first_image_url(message)
@@ -203,21 +220,37 @@ async def on_message(message: discord.Message):
     set_evidence_review_message(str(message.id), str(review_msg.id))
     print(f"[EVIDENCE] enviado review={review_msg.id}")
 
-    if suggested_participants:
-        await message.reply(
-            embed=build_participant_confirmation_embed(suggested_participants, unresolved_names),
-            view=EvidenceAuthorConfirmView(
+    participant_thread = None
+    if should_create_participant_thread(actividad, message.content, suggested_participants, unresolved_names):
+        participant_thread = await create_participant_thread(
+            message,
+            actividad,
+            review_msg,
+            suggested_participants,
+            unresolved_names,
+        )
+
+    if not participant_thread and (suggested_participants or unresolved_names):
+        author_confirm_view = None
+        if suggested_participants:
+            author_confirm_view = EvidenceAuthorConfirmView(
                 str(message.id),
                 str(message.author.id),
                 suggested_participants,
                 review_msg,
-            ),
+            )
+        await message.reply(
+            embed=build_participant_confirmation_embed(suggested_participants, unresolved_names),
+            view=author_confirm_view,
             mention_author=True,
         )
 
+    done_description = f"Revision: {review_msg.jump_url}"
+    if participant_thread:
+        done_description += f"\nHilo de participantes: {participant_thread.mention}"
     done_embed = discord.Embed(
         title="Evidencia enviada a revision",
-        description=f"Revision: {review_msg.jump_url}",
+        description=done_description,
         color=COLOR_SUCCESS
     )
     await analyzing_msg.edit(embed=done_embed)
@@ -303,180 +336,51 @@ def is_supported_image(attachment: discord.Attachment):
 
 async def get_evidence_participants(message: discord.Message):
     participants = {str(message.author.id): message.author.display_name}
-    unresolved = []
-    suggestions = []
 
     for member in message.mentions:
         if not member.bot:
             participants[str(member.id)] = member.display_name
 
-    for name in extract_plus_names(message.content):
-        member = resolve_member_by_name(message.guild, name) or await query_exact_member_by_name(message.guild, name)
-        if member and not member.bot:
-            participants[str(member.id)] = member.display_name
-            continue
+    resolved, unresolved, suggestions = await participant_tools.resolve_plus_names(
+        message.guild,
+        message.content,
+        set(participants),
+    )
+    for user_id, display_name in resolved:
+        participants[str(user_id)] = display_name
 
-        found = find_scout_by_name(name)
-        if found:
-            participants[str(found[0])] = found[1]
-            continue
-
-        suggestion = await suggest_participant_for_name(message.guild, name, set(participants))
-        if suggestion:
-            suggestions.append(suggestion)
-            continue
-
-        unresolved.append(name)
-
-    return list(participants.items()), unresolved, dedupe_suggestions(suggestions)
-
-def extract_plus_names(text: str):
-    return re.findall(r"(?<!\S)\+([A-Za-z0-9_.\-À-ÿ]{2,32})", text or "")
-
-def resolve_member_by_name(guild: discord.Guild, name: str):
-    target = normalize_name(name)
-    for member in guild.members:
-        names = [member.name, member.display_name, member.global_name or ""]
-        if any(normalize_name(candidate) == target for candidate in names):
-            return member
-    return None
-
-async def query_exact_member_by_name(guild: discord.Guild, name: str):
-    try:
-        members = await guild.query_members(name, limit=10, cache=True)
-    except (discord.HTTPException, discord.Forbidden, AttributeError):
-        return None
-
-    target = normalize_name(name)
-    for member in members:
-        names = [member.name, member.display_name, member.global_name or ""]
-        if any(normalize_name(candidate) == target for candidate in names):
-            return member
-    return None
-
-async def suggest_participant_for_name(guild: discord.Guild, raw_name: str, excluded_user_ids: set[str]):
-    target = normalize_name(raw_name)
-    if not target:
-        return None
-
-    candidates = {}
-    add_member_candidates(candidates, target, guild.members, excluded_user_ids)
-
-    try:
-        queried_members = await guild.query_members(raw_name, limit=20, cache=True)
-    except (discord.HTTPException, discord.Forbidden, AttributeError):
-        queried_members = []
-    add_member_candidates(candidates, target, queried_members, excluded_user_ids)
-    add_known_scout_candidates(candidates, target, excluded_user_ids)
-
-    if not candidates:
-        return None
-
-    best = max(candidates.values(), key=lambda item: item["score"])
-    if best["score"] < score_threshold(target):
-        return None
-
-    return {
-        "raw": raw_name,
-        "user_id": best["user_id"],
-        "display_name": best["display_name"],
-        "score": best["score"],
-        "source": best["source"],
-    }
-
-def add_member_candidates(candidates: dict, target: str, members, excluded_user_ids: set[str]):
-    for member in members:
-        if member.bot or str(member.id) in excluded_user_ids:
-            continue
-
-        names = [member.name, member.display_name, member.global_name or ""]
-        score = max(score_name_match(target, candidate) for candidate in names)
-        upsert_candidate(
-            candidates,
-            str(member.id),
-            member.display_name,
-            score,
-            "Discord",
-        )
-
-def add_known_scout_candidates(candidates: dict, target: str, excluded_user_ids: set[str]):
-    for row in get_all_scouts():
-        user_id, username = str(row[0]), row[1]
-        if user_id in excluded_user_ids:
-            continue
-        score = score_name_match(target, username)
-        upsert_candidate(candidates, user_id, username, score, "Ranking")
-
-def upsert_candidate(candidates: dict, user_id: str, display_name: str, score: int, source: str):
-    if score <= 0:
-        return
-    current = candidates.get(user_id)
-    if current and current["score"] >= score:
-        return
-    candidates[user_id] = {
-        "user_id": user_id,
-        "display_name": display_name,
-        "score": score,
-        "source": source,
-    }
-
-def score_name_match(target: str, candidate: str):
-    candidate = normalize_name(candidate)
-    if not target or not candidate:
-        return 0
-    if target == candidate:
-        return 100
-    if candidate.startswith(target):
-        return 94
-    if target.startswith(candidate) and len(candidate) >= 3:
-        return 90
-    if len(target) >= 4 and (target in candidate or candidate in target):
-        return 86
-    return round(SequenceMatcher(None, target, candidate).ratio() * 100)
-
-def score_threshold(target: str):
-    if len(target) <= 3:
-        return 88
-    if len(target) <= 5:
-        return 78
-    return 72
-
-def dedupe_suggestions(suggestions: list[dict]):
-    deduped = []
-    seen = set()
-    for suggestion in suggestions:
-        key = (suggestion["raw"].lower(), suggestion["user_id"])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(suggestion)
-    return deduped[:25]
-
-def format_participant_suggestions(suggestions: list[dict]):
-    lines = []
-    for suggestion in suggestions[:10]:
-        lines.append(
-            f"`+{suggestion['raw']}` -> <@{suggestion['user_id']}> "
-            f"({suggestion['score']}%, {suggestion['source']})"
-        )
-    if len(suggestions) > 10:
-        lines.append(f"... y {len(suggestions) - 10} mas")
-    return "\n".join(lines)
+    return list(participants.items()), unresolved, suggestions
 
 def build_participant_confirmation_embed(suggestions: list[dict], unresolved_names: list[str]):
-    embed = discord.Embed(
-        title="Confirmar participantes",
-        description=(
+    has_suggestions = bool(suggestions)
+    has_unresolved = bool(unresolved_names)
+    if not has_suggestions and not has_unresolved:
+        title = "Agregar participantes"
+        description = "Usa este hilo para agregar personas relacionadas a la evidencia."
+    elif has_suggestions:
+        title = "Confirmar participantes"
+        description = (
             "Reconoci algunos nombres escritos con `+`. "
             "Marca solo las personas correctas y confirma para agregarlas a la evidencia."
-        ),
+        )
+    else:
+        title = "Participantes sin reconocer"
+        description = (
+            "No pude asociar estos nombres a una cuenta. "
+            "Corrigelos en este hilo con menciones, IDs o `+nombres`."
+        )
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
         color=COLOR_WARNING,
     )
-    embed.add_field(
-        name="Sugerencias",
-        value=format_participant_suggestions(suggestions)[:1000],
-        inline=False,
-    )
+    if suggestions:
+        embed.add_field(
+            name="Sugerencias",
+            value=participant_tools.format_participant_suggestions(suggestions)[:1000],
+            inline=False,
+        )
     if unresolved_names:
         embed.add_field(
             name="Sin coincidencia",
@@ -485,9 +389,139 @@ def build_participant_confirmation_embed(suggestions: list[dict], unresolved_nam
         )
     return embed
 
-def normalize_name(name: str):
-    text = unicodedata.normalize("NFKD", str(name or ""))
-    return "".join(ch.lower() for ch in text if ch.isalnum())
+def should_create_participant_thread(
+    actividad: str,
+    content: str,
+    suggestions: list[dict],
+    unresolved_names: list[str],
+):
+    return (
+        bool(suggestions)
+        or bool(unresolved_names)
+        or actividad == "limpieza_aspecto"
+        or len(participant_tools.extract_plus_names(content)) >= 3
+    )
+
+async def create_participant_thread(
+    message: discord.Message,
+    actividad: str,
+    review_msg: discord.Message,
+    suggestions: list[dict],
+    unresolved_names: list[str],
+):
+    try:
+        thread_name = build_participant_thread_name(message, actividad)
+        thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+        set_evidence_thread(str(message.id), str(thread.id))
+        await add_participant_thread_to_review(review_msg, thread)
+
+        embed = build_participant_confirmation_embed(suggestions, unresolved_names)
+        embed.add_field(
+            name="Como corregir",
+            value=(
+                "Escribe aqui menciones, IDs o nombres con `+`. "
+                "Ejemplo: `+violeth +chino +littleponny`."
+            ),
+            inline=False,
+        )
+
+        view = None
+        if suggestions:
+            view = EvidenceAuthorConfirmView(
+                str(message.id),
+                str(message.author.id),
+                suggestions,
+                review_msg,
+            )
+
+        await thread.send(
+            content=f"{message.author.mention} hilo para corregir participantes de esta evidencia.",
+            embed=embed,
+            view=view,
+        )
+        return thread
+    except discord.Forbidden:
+        print("[THREAD] Sin permisos para crear hilo de participantes")
+    except discord.HTTPException as err:
+        print(f"[THREAD ERROR] No se pudo crear hilo: {err}")
+    return None
+
+async def add_participant_thread_to_review(review_msg: discord.Message, thread: discord.Thread):
+    if not review_msg.embeds:
+        return
+    embed = review_msg.embeds[0]
+    for index, field in enumerate(embed.fields):
+        if field.name == "Hilo participantes":
+            embed.set_field_at(index, name=field.name, value=thread.mention, inline=False)
+            await review_msg.edit(embed=embed)
+            return
+    embed.add_field(name="Hilo participantes", value=thread.mention, inline=False)
+    await review_msg.edit(embed=embed)
+
+def build_participant_thread_name(message: discord.Message, actividad: str):
+    label = ACTIVIDADES.get(actividad, {}).get("label", "Evidencia")
+    base = f"Participantes {label} - {message.author.display_name}"
+    return base[:90]
+
+async def handle_evidence_thread_message(message: discord.Message):
+    if not isinstance(message.channel, discord.Thread):
+        return False
+
+    evidence = get_evidence_by_thread(str(message.channel.id))
+    if not evidence:
+        return False
+
+    evidence_message_id, author_id, _, status, review_message_id = evidence
+    if not participant_tools.contains_participant_reference(message.content):
+        return True
+
+    if str(message.author.id) != str(author_id) and not can_review_member(message.author):
+        await message.reply(
+            "Solo el autor de la evidencia o un revisor puede agregar participantes aqui.",
+            mention_author=False,
+        )
+        return True
+
+    if status != "pending":
+        await message.reply("Esta evidencia ya fue revisada.", mention_author=False)
+        return True
+
+    review_message = await fetch_review_message(review_message_id or get_evidence_review_message_id(evidence_message_id))
+    existing_user_ids = {user_id for user_id, _ in db_get_evidence_participants(evidence_message_id)}
+    participants, unresolved, suggestions = await participant_tools.resolve_manual_names(
+        message.guild,
+        message.content,
+        existing_user_ids,
+    )
+
+    added = []
+    if participants:
+        if not add_evidence_participants(evidence_message_id, participants):
+            await message.reply("Esta evidencia ya fue revisada.", mention_author=False)
+            return True
+        added = participants
+        if review_message:
+            await refresh_review_participants(review_message, evidence_message_id)
+
+    embed = build_participant_resolution_embed(added, suggestions, unresolved)
+    view = None
+    if suggestions and review_message:
+        if can_review_member(message.author):
+            view = EvidenceReviewerSuggestionConfirmView(evidence_message_id, review_message, suggestions)
+        else:
+            view = EvidenceAuthorConfirmView(evidence_message_id, author_id, suggestions, review_message)
+
+    await message.reply(embed=embed, view=view, mention_author=False)
+    return True
+
+async def fetch_review_message(review_message_id: str | None):
+    if not review_message_id:
+        return None
+    try:
+        channel = bot.get_channel(EVIDENCE_REVIEW_CHANNEL_ID) or await bot.fetch_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+        return await channel.fetch_message(int(review_message_id))
+    except (discord.HTTPException, ValueError, TypeError, AttributeError):
+        return None
 
 async def get_review_channel(message: discord.Message):
     if EVIDENCE_REVIEW_CHANNEL_ID:
@@ -599,6 +633,61 @@ async def modificar_puntos(
         color=COLOR_SUCCESS if cantidad > 0 else COLOR_ERROR,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="registrar_alt", description="Asocia uno o varios nombres alternos a un scout")
+@app_commands.describe(usuario="Scout principal que recibira los puntos", nombres="Ej: +littleponny, +otroNombre")
+async def registrar_alt(interaction: discord.Interaction, usuario: discord.Member, nombres: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    aliases = participant_tools.extract_manual_names(nombres)
+    if not aliases:
+        await interaction.response.send_message("Escribe al menos un nombre valido.", ephemeral=True)
+        return
+
+    saved = []
+    for alias in aliases:
+        if add_scout_alias(str(usuario.id), usuario.display_name, alias):
+            saved.append(alias)
+
+    embed = discord.Embed(
+        title="Aliases registrados",
+        description=(
+            f"Main: {usuario.mention}\n"
+            f"Nombres: {', '.join(f'`+{alias}`' for alias in saved)}"
+        ),
+        color=COLOR_SUCCESS,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="quitar_alt", description="Quita un nombre alterno del ranking")
+@app_commands.describe(nombre="Nombre alterno a quitar, con o sin +")
+async def quitar_alt(interaction: discord.Interaction, nombre: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    removed = remove_scout_alias(nombre)
+    message = f"`+{nombre.lstrip('+')}` eliminado." if removed else "No encontre ese alias."
+    await interaction.response.send_message(message, ephemeral=True)
+
+
+@tree.command(name="ver_alts", description="Muestra los nombres alternos asociados a un scout")
+async def ver_alts(interaction: discord.Interaction, usuario: discord.Member):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    rows = get_scout_aliases(str(usuario.id))
+    if not rows:
+        await interaction.response.send_message(f"{usuario.mention} no tiene aliases registrados.", ephemeral=True)
+        return
+
+    aliases = ", ".join(f"`+{alias}`" for _, _, alias in rows)
+    await interaction.response.send_message(f"Aliases de {usuario.mention}: {aliases}", ephemeral=True)
 
 
 @tree.command(name="export_ranking", description="Exporta el ranking como CSV")

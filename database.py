@@ -64,7 +64,8 @@ def init_db():
                 puntos INTEGER,
                 fecha TEXT,
                 status TEXT DEFAULT 'approved',
-                review_message_id TEXT
+                review_message_id TEXT,
+                thread_id TEXT
             )
         """)
         c.execute("""
@@ -73,6 +74,15 @@ def init_db():
                 user_id TEXT,
                 username TEXT,
                 PRIMARY KEY (message_id, user_id)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS scout_aliases (
+                normalized_alias TEXT PRIMARY KEY,
+                alias TEXT,
+                user_id TEXT,
+                username TEXT,
+                created_at TEXT
             )
         """)
         c.execute("""
@@ -87,6 +97,8 @@ def init_db():
             c.execute("ALTER TABLE evidence_messages ADD COLUMN status TEXT DEFAULT 'approved'")
         if "review_message_id" not in cols:
             c.execute("ALTER TABLE evidence_messages ADD COLUMN review_message_id TEXT")
+        if "thread_id" not in cols:
+            c.execute("ALTER TABLE evidence_messages ADD COLUMN thread_id TEXT")
         # Valores por defecto de configuración
         defaults = list(DEFAULT_ACTIVITY_POINTS.items())
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
@@ -195,6 +207,34 @@ def set_evidence_review_message(message_id: str, review_message_id: str):
         )
         conn.commit()
 
+def set_evidence_thread(message_id: str, thread_id: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE evidence_messages SET thread_id=? WHERE message_id=?",
+            (str(thread_id), str(message_id))
+        )
+        conn.commit()
+
+def get_evidence_by_thread(thread_id: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT message_id, user_id, actividad, status, review_message_id
+            FROM evidence_messages
+            WHERE thread_id=?
+            """,
+            (str(thread_id),)
+        ).fetchone()
+    return row
+
+def get_evidence_review_message_id(message_id: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT review_message_id FROM evidence_messages WHERE message_id=?",
+            (str(message_id),)
+        ).fetchone()
+    return row[0] if row else None
+
 def add_evidence_participants(message_id: str, participants):
     with get_conn() as conn:
         row = conn.execute(
@@ -289,6 +329,56 @@ def find_scout_by_name(name: str):
         if normalize_name(username) == target:
             return user_id, username
     return None
+
+def add_scout_alias(user_id: str, username: str, alias: str):
+    normalized_alias = normalize_name(alias)
+    if not normalized_alias:
+        return False
+
+    ensure_scout(user_id, username)
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO scout_aliases
+                (normalized_alias, alias, user_id, username, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (normalized_alias, alias.strip(), str(user_id), username, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+    return True
+
+def remove_scout_alias(alias: str):
+    normalized_alias = normalize_name(alias)
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "DELETE FROM scout_aliases WHERE normalized_alias=?",
+            (normalized_alias,)
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+def find_scout_alias(name: str):
+    normalized_alias = normalize_name(name)
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, username, alias FROM scout_aliases WHERE normalized_alias=?",
+            (normalized_alias,)
+        ).fetchone()
+    return row
+
+def get_scout_aliases(user_id: str | None = None):
+    with get_conn() as conn:
+        if user_id:
+            rows = conn.execute(
+                "SELECT user_id, username, alias FROM scout_aliases WHERE user_id=? ORDER BY alias",
+                (str(user_id),)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT user_id, username, alias FROM scout_aliases ORDER BY username, alias"
+            ).fetchall()
+    return rows
 
 def reject_evidence(message_id: str):
     with get_conn() as conn:

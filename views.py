@@ -1,9 +1,10 @@
 import csv
 import io
 import discord
-from database import add_activity, add_evidence_participants, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
+from database import add_activity, add_evidence_participants, add_scout_alias, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
 from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, DASHBOARD_CHANNEL_ID
 from permissions import can_review_evidence, is_admin
+import participants as participant_tools
 
 # ── Panel de actividades ──────────────────────────────────────────────────────
 
@@ -386,6 +387,7 @@ class EvidenceAuthorConfirmView(discord.ui.View):
             return
 
         if participants:
+            learn_aliases_from_suggestions(selected)
             await refresh_review_participants(
                 self.review_message,
                 self.evidence_message_id,
@@ -456,19 +458,129 @@ class EvidenceSuggestionSelect(discord.ui.Select):
         await interaction.response.defer()
 
 
+class EvidenceReviewerSuggestionConfirmView(discord.ui.View):
+    def __init__(self, evidence_message_id: str, review_message: discord.Message, suggestions: list[dict]):
+        super().__init__(timeout=120)
+        self.evidence_message_id = evidence_message_id
+        self.review_message = review_message
+        self.suggestions = dedupe_suggestions_by_user(suggestions)
+        self.selected_user_ids = {suggestion["user_id"] for suggestion in self.suggestions}
+        self.add_item(EvidenceSuggestionSelect(self.suggestions))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if can_review_evidence(interaction):
+            return True
+        await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Agregar seleccion", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        selected = [
+            suggestion
+            for suggestion in self.suggestions
+            if suggestion["user_id"] in self.selected_user_ids
+        ]
+        participants = [
+            (suggestion["user_id"], suggestion["display_name"])
+            for suggestion in selected
+        ]
+
+        if not participants:
+            await interaction.response.edit_message(content="No se agrego ninguna sugerencia.", embed=None, view=None)
+            return
+
+        if not add_evidence_participants(self.evidence_message_id, participants):
+            await interaction.response.send_message("Evidencia ya revisada.", ephemeral=True)
+            return
+
+        learn_aliases_from_suggestions(selected)
+        await refresh_review_participants(
+            self.review_message,
+            self.evidence_message_id,
+            confirmation_text=f"Sugerencias agregadas por {interaction.user.mention}",
+        )
+        embed = discord.Embed(
+            title="Participantes agregados",
+            description="\n".join(f"<@{user_id}>" for user_id, _ in participants[:25]),
+            color=COLOR_SUCCESS,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
 class EvidenceReviewView(discord.ui.View):
     def __init__(self, evidence_message_id: str):
         super().__init__(timeout=None)
         self.evidence_message_id = evidence_message_id
+        self.add_item(EvidenceAddByTextButton(evidence_message_id))
         self.add_item(EvidenceAddParticipantsButton(evidence_message_id))
         self.add_item(EvidenceApproveButton(evidence_message_id))
         self.add_item(EvidenceRejectButton(evidence_message_id))
 
 
+class EvidenceAddByTextButton(discord.ui.Button):
+    def __init__(self, evidence_message_id: str):
+        super().__init__(
+            label="Agregar por texto",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"evidence_add_text:{evidence_message_id}"
+        )
+        self.evidence_message_id = evidence_message_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_review_evidence(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(
+            EvidenceParticipantTextModal(self.evidence_message_id, interaction.message)
+        )
+
+
+class EvidenceParticipantTextModal(discord.ui.Modal):
+    nombres = discord.ui.TextInput(
+        label="Nombres, menciones o IDs",
+        placeholder="+violeth +chino +peccato +shourout +sherlock +littleponny",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    def __init__(self, evidence_message_id: str, review_message: discord.Message):
+        super().__init__(title="Agregar participantes")
+        self.evidence_message_id = evidence_message_id
+        self.review_message = review_message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        existing_user_ids = {user_id for user_id, _ in get_evidence_participants(self.evidence_message_id)}
+        participants, unresolved, suggestions = await participant_tools.resolve_manual_names(
+            interaction.guild,
+            str(self.nombres.value),
+            existing_user_ids,
+        )
+
+        added = []
+        if participants:
+            if not add_evidence_participants(self.evidence_message_id, participants):
+                await interaction.response.send_message("Evidencia ya revisada.", ephemeral=True)
+                return
+            added = participants
+            await refresh_review_participants(self.review_message, self.evidence_message_id)
+
+        embed = build_participant_resolution_embed(added, suggestions, unresolved)
+        view = None
+        if suggestions:
+            view = EvidenceReviewerSuggestionConfirmView(
+                self.evidence_message_id,
+                self.review_message,
+                suggestions,
+            )
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
 class EvidenceAddParticipantsButton(discord.ui.Button):
     def __init__(self, evidence_message_id: str):
         super().__init__(
-            label="Agregar personas",
+            label="Agregar por selector",
             style=discord.ButtonStyle.secondary,
             custom_id=f"evidence_add_people:{evidence_message_id}"
         )
@@ -608,6 +720,41 @@ def upsert_embed_field(embed: discord.Embed, name: str, value: str):
             embed.set_field_at(index, name=name, value=value, inline=False)
             return
     embed.add_field(name=name, value=value, inline=False)
+
+
+def build_participant_resolution_embed(added, suggestions: list[dict], unresolved: list[str]):
+    embed = discord.Embed(title="Resolucion de participantes", color=COLOR_PANEL)
+    if added:
+        embed.add_field(
+            name="Agregados",
+            value="\n".join(f"<@{user_id}>" for user_id, _ in added[:25]),
+            inline=False,
+        )
+    if suggestions:
+        embed.add_field(
+            name="Sugerencias",
+            value=participant_tools.format_participant_suggestions(suggestions)[:1000],
+            inline=False,
+        )
+    if unresolved:
+        embed.add_field(
+            name="Sin coincidencia",
+            value=", ".join(f"`+{name}`" for name in unresolved[:25])[:1000],
+            inline=False,
+        )
+    if not added and not suggestions and not unresolved:
+        embed.description = "No encontre nombres nuevos para agregar."
+    return embed
+
+
+def learn_aliases_from_suggestions(suggestions: list[dict]):
+    for suggestion in suggestions:
+        for raw_name in suggestion.get("raw_names", [suggestion.get("raw", "")]):
+            add_scout_alias(
+                suggestion["user_id"],
+                suggestion["display_name"],
+                raw_name,
+            )
 
 
 def remove_embed_field(embed: discord.Embed, name: str):
