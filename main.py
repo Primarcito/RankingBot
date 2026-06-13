@@ -52,6 +52,7 @@ from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil
 from permissions import can_review_member, is_admin
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
+import mapping_analysis
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -70,6 +71,7 @@ AURA_TAUNT_RESPONSE = "RankingBot confirma: el aura se farmea, la envidia se not
 AURA_TAUNT_TARGETS = (
     (1435778824775274581, 1514156352463700051),
 )
+MAPEO_LOG_CHANNEL_ID = 1505954990756204755
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -932,6 +934,82 @@ class ScouteoCountRuleModal(discord.ui.Modal):
         await self.view_ref.refresh(interaction)
 
 
+@tree.command(name="analizar_mapeo", description="Analiza logs de mapeo desde el inicio semanal del ranking")
+async def analizar_mapeo(interaction: discord.Interaction):
+    if not can_review_member(interaction.user):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    channel = interaction.client.get_channel(MAPEO_LOG_CHANNEL_ID)
+    if not channel:
+        try:
+            channel = await interaction.client.fetch_channel(MAPEO_LOG_CHANNEL_ID)
+        except discord.HTTPException:
+            await interaction.followup.send("No pude abrir el canal de mapeo configurado.")
+            return
+
+    week_start = current_weekly_ranking_start()
+    events = []
+    scanned = 0
+    async for message in channel.history(limit=None, after=week_start):
+        scanned += 1
+        event = mapping_analysis.parse_mapping_message(message)
+        if event:
+            events.append(event)
+
+    if not events:
+        await interaction.followup.send(
+            f"No encontre eventos validos de mapeo desde `{week_start.strftime('%Y-%m-%d %H:%M UTC')}`."
+        )
+        return
+
+    analysis = mapping_analysis.analyze_mapping_events(events)
+    summary = analysis["summary"]
+    embed = discord.Embed(
+        title="Analisis de mapeo",
+        description=(
+            f"Canal: <#{MAPEO_LOG_CHANNEL_ID}>\n"
+            f"Desde: `{week_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
+            f"Mensajes revisados: `{scanned}`\n"
+            f"Eventos detectados: `{summary['total_events']}`\n"
+            f"Reglas: `Road unica +1 | Priority +0.5 | RELOCK +0.75 | Duplicada -0.5`"
+        ),
+        color=COLOR_WARNING,
+    )
+    embed.add_field(
+        name="Resumen general",
+        value=(
+            f"Rutas agregadas: `{summary['road_total']}`\n"
+            f"Rutas unicas: `{summary['road_unique']}`\n"
+            f"Duplicados: `{summary['road_duplicates']}`\n"
+            f"Prioridades: `{summary['priority_total']}`\n"
+            f"Relocks: `{summary['relock_total']}`\n"
+            f"Jugador mas activo: **{summary['most_active']}**\n"
+            f"Mejor aporte estrategico: **{summary['best_strategic']}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Ranking",
+        value=mapping_analysis.build_ranking_table(analysis["ranking"]),
+        inline=False,
+    )
+    embed.add_field(
+        name="Rutas duplicadas",
+        value=mapping_analysis.build_duplicates_table(analysis["duplicates"]),
+        inline=False,
+    )
+
+    files = [
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"]), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
+        discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
+    ]
+    await interaction.followup.send(embed=embed, files=files)
+
+
 @tree.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
 async def dashboard_scouts(interaction: discord.Interaction):
     if not is_admin(interaction):
@@ -1183,6 +1261,21 @@ def next_weekly_reset_at():
     target = target + timedelta(days=days_ahead)
     if target <= now:
         target = target + timedelta(days=7)
+    return target
+
+
+def current_weekly_ranking_start():
+    now = datetime.now(timezone.utc)
+    target = now.replace(
+        hour=AUTO_RESET_HOUR_UTC,
+        minute=AUTO_RESET_MINUTE_UTC,
+        second=0,
+        microsecond=0,
+    )
+    days_back = (target.weekday() - AUTO_RESET_WEEKDAY_UTC) % 7
+    target = target - timedelta(days=days_back)
+    if target > now:
+        target = target - timedelta(days=7)
     return target
 
 
