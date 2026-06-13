@@ -10,7 +10,7 @@ from datetime import timezone
 ROAD_SCORE = 1.0
 PRIORITY_SCORE = 0.5
 RELOCK_SCORE = 0.75
-DUPLICATE_PENALTY = -0.5
+DUPLICATE_SCORE = 0.0
 
 EVENT_LABELS = {
     "road": ("road added",),
@@ -123,7 +123,7 @@ def analyze_mapping_events(events):
         row["score"] = (
             (row["road_unique"] * ROAD_SCORE)
             + row["strategic_score"]
-            + (row["road_duplicates"] * DUPLICATE_PENALTY)
+            + (row["road_duplicates"] * DUPLICATE_SCORE)
         )
 
     ranking = sorted(
@@ -301,7 +301,7 @@ def build_ranking_table(ranking, limit=12):
         return "Sin eventos validos."
 
     lines = [
-        " # Jugador        U Dup Pri Rel Score",
+        " # Jugador        U Dup Pri Rel   Pts",
         "-- -------------- - --- --- --- -----",
     ]
     for row in ranking[:limit]:
