@@ -1018,7 +1018,7 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
             f"Desde: `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
-            f"Reglas: `Road unica +1 | Priority +0.5 | RELOCK +0.75 | Duplicada +0`"
+            f"Reglas: `Road unica +1 | Priority +0.15 | RELOCK +0.15 | Duplicada +0`"
         ),
         color=COLOR_SUCCESS if confirmed_by else COLOR_WARNING,
     )
