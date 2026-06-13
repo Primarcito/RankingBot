@@ -360,6 +360,7 @@ SCOUTEO_HOURS_PER_POINT = 5
 SCOUTEO_MAPS_PER_POINT = 3
 SCOUTEO_HOURS_SETTING_KEY = "scouteo_count_hours_per_point"
 SCOUTEO_MAPS_SETTING_KEY = "scouteo_count_maps_per_point"
+SCOUTEO_DASHBOARD_STATE_PREFIX = "scouteo_count_dashboard:"
 
 def get_scouteo_count_settings():
     return (
@@ -499,7 +500,7 @@ async def create_scouteo_count_review(
     )
     if pts <= 0:
         print("[SCOUTEO SUMMARY] duplicado")
-        return True
+        return False
 
     review_channel = await get_review_channel(message)
     embed = discord.Embed(
@@ -777,7 +778,6 @@ async def conteo(interaction: discord.Interaction, id_mensaje: str):
     await interaction.response.send_message(
         embed=embed,
         view=ScouteoCountView(source_message, records, hours_per_point, maps_per_point),
-        ephemeral=True,
     )
 
 
@@ -859,14 +859,23 @@ class ScouteoCountView(discord.ui.View):
 
     @discord.ui.button(label="Horas", style=discord.ButtonStyle.secondary)
     async def change_hours(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso para editar este conteo.", ephemeral=True)
+            return
         await interaction.response.send_modal(ScouteoCountRuleModal(self, "hours"))
 
     @discord.ui.button(label="Mapas", style=discord.ButtonStyle.secondary)
     async def change_maps(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso para editar este conteo.", ephemeral=True)
+            return
         await interaction.response.send_modal(ScouteoCountRuleModal(self, "maps"))
 
     @discord.ui.button(label="Enviar a revision", style=discord.ButtonStyle.success)
     async def send_review(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso para enviar este conteo.", ephemeral=True)
+            return
         set_scouteo_count_settings(self.hours_per_point, self.maps_per_point)
         created = await create_scouteo_count_review(
             self.source_message,
@@ -880,6 +889,10 @@ class ScouteoCountView(discord.ui.View):
 
         for item in self.children:
             item.disabled = True
+        set_bot_state(
+            f"{SCOUTEO_DASHBOARD_STATE_PREFIX}{self.source_message.id}",
+            f"{interaction.channel.id}:{interaction.message.id}",
+        )
         await interaction.response.edit_message(
             content="Conteo enviado a revision.",
             embed=build_scouteo_count_embed(

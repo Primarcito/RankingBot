@@ -1,7 +1,8 @@
 import csv
 import io
+import asyncio
 import discord
-from database import add_activity, add_evidence_participants, add_scout_alias, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
+from database import add_activity, add_evidence_participants, add_scout_alias, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_bot_state, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
 from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, DASHBOARD_CHANNEL_ID
 from permissions import can_review_evidence, is_admin
 import participants as participant_tools
@@ -662,6 +663,7 @@ class EvidenceApproveButton(discord.ui.Button):
         await interaction.response.edit_message(embed=embed, view=None)
         await set_review_reaction(interaction, "\N{WHITE HEAVY CHECK MARK}")
         await set_source_reaction(interaction, "\N{WHITE HEAVY CHECK MARK}")
+        asyncio.create_task(delete_scouteo_dashboard_after_delay(interaction, self.evidence_message_id))
 
 
 class EvidenceRejectButton(discord.ui.Button):
@@ -711,6 +713,22 @@ async def set_source_reaction(interaction: discord.Interaction, emoji: str):
         await source_message.clear_reaction("\N{OUTBOX TRAY}")
         await source_message.add_reaction(emoji)
     except (discord.HTTPException, IndexError, ValueError, AttributeError):
+        pass
+
+
+async def delete_scouteo_dashboard_after_delay(interaction: discord.Interaction, evidence_message_id: str):
+    dashboard_ref = get_bot_state(f"scouteo_count_dashboard:{evidence_message_id}")
+    if not dashboard_ref or ":" not in dashboard_ref:
+        return
+
+    await asyncio.sleep(3600)
+
+    channel_id, message_id = dashboard_ref.split(":", 1)
+    try:
+        channel = interaction.client.get_channel(int(channel_id)) or await interaction.client.fetch_channel(int(channel_id))
+        message = await channel.fetch_message(int(message_id))
+        await message.delete()
+    except (discord.HTTPException, ValueError, TypeError, AttributeError):
         pass
 
 
