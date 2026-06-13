@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 
 from database import (
     add_activity,
-    add_direct_point_awards,
     add_evidence_participants,
     add_scout_alias,
     calc_puntos_totales,
@@ -1027,7 +1026,6 @@ def build_mapeo_analysis_embed(
     analysis = apply_mapeo_score_settings(analysis, road_weight, priority_weight, relock_weight)
     summary = analysis["summary"]
     mapeo_value = get_puntos("mapeo") or 1
-    max_points = max_units * mapeo_value
     total_weight = sum(row["score"] for row in analysis["ranking"])
     top_weight = max((row["score"] for row in analysis["ranking"]), default=0)
     embed = discord.Embed(
@@ -1038,7 +1036,7 @@ def build_mapeo_analysis_embed(
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
             f"Peso: `Road unica {mapping_analysis.format_score(road_weight)} | Priority {mapping_analysis.format_score(priority_weight)} | RELOCK {mapping_analysis.format_score(relock_weight)} | Duplicada 0`\n"
-            f"Tope mejor aporte: `{max_units}` unidades x `{mapeo_value}` pt Mapeo = `{max_points}` pts\n"
+            f"Tope mejor aporte: `{max_units}` unidades x `{mapeo_value}` pt Mapeo = `{max_units * mapeo_value}` pts\n"
             f"Peso top: `{mapping_analysis.format_score(top_weight)}` | Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
         color=color,
@@ -1067,7 +1065,7 @@ def build_mapeo_analysis_embed(
     )
     embed.add_field(
         name="Ranking",
-        value=mapping_analysis.build_ranking_table(analysis["ranking"], max_points),
+        value=mapping_analysis.build_ranking_table(analysis["ranking"], max_units, mapeo_value),
         inline=False,
     )
     embed.add_field(
@@ -1081,27 +1079,27 @@ def build_mapeo_analysis_embed(
 
 
 def build_mapeo_analysis_files(analysis: dict):
-    max_points = MAPEO_MAX_WEEKLY_UNITS * (get_puntos("mapeo") or 1)
+    mapeo_value = get_puntos("mapeo") or 1
     return [
-        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], max_points), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], MAPEO_MAX_WEEKLY_UNITS, mapeo_value), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]
 
 
-def build_mapeo_point_awards(analysis: dict, max_points: int):
+def build_mapeo_unit_awards(analysis: dict, max_units: int):
     ranking = analysis["ranking"]
     top_weight = max((row["score"] for row in ranking), default=0)
     awards = []
     skipped = []
     for row in ranking:
-        points = mapping_analysis.final_points_for_row(row, top_weight, max_points)
-        if points <= 0:
+        units = mapping_analysis.final_units_for_row(row, top_weight, max_units)
+        if units <= 0:
             continue
         if not row.get("discord_id"):
             skipped.append(row["player"])
             continue
-        awards.append((row["discord_id"], row["player"], points))
+        awards.append((row["discord_id"], row["player"], units))
     return awards, skipped
 
 
@@ -1235,28 +1233,33 @@ class MapeoReviewView(discord.ui.View):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
 
-        max_points = self.max_units * (get_puntos("mapeo") or 1)
-        awards, skipped = build_mapeo_point_awards(self.adjusted_analysis(), max_points)
+        source_key = f"mapeo:{self.latest_event_at.isoformat() if self.latest_event_at else self.analysis_start.isoformat()}"
+        if get_bot_state(f"applied:{source_key}"):
+            await interaction.response.send_message("Estos puntos ya fueron aplicados antes.", ephemeral=True)
+            return
+
+        awards, skipped = build_mapeo_unit_awards(self.adjusted_analysis(), self.max_units)
         if not awards:
             await interaction.response.send_message("No hay usuarios con ID para aplicar puntos.", ephemeral=True)
             return
 
-        source_key = f"mapeo:{self.latest_event_at.isoformat() if self.latest_event_at else self.analysis_start.isoformat()}"
-        if not add_direct_point_awards(source_key, "mapeo", awards):
-            await interaction.response.send_message("Estos puntos ya fueron aplicados antes.", ephemeral=True)
-            return
+        total_points = 0
+        mapeo_value = get_puntos("mapeo") or 0
+        for user_id, username, units in awards:
+            total_points += add_activity(str(user_id), username, "mapeo", int(units))
+        set_bot_state(f"applied:{source_key}", datetime.now(timezone.utc).isoformat())
 
         if self.latest_event_at:
             set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, self.latest_event_at.isoformat())
 
         for item in self.children:
             item.disabled = True
-        total_points = sum(points for _, _, points in awards)
+        total_units = sum(units for _, _, units in awards)
         skipped_text = f" No aplicados sin ID: {', '.join(skipped[:5])}." if skipped else ""
         await interaction.response.edit_message(
             embed=self.embed(
                 f"Aprobado por {interaction.user.mention}. "
-                f"Aplicados `{total_points}` pts a `{len(awards)}` jugadores. "
+                f"Aplicadas `{total_units}` unidades de mapeo x `{mapeo_value}` pt = `{total_points}` pts a `{len(awards)}` jugadores. "
                 f"Rango cerrado para futuros analisis.{skipped_text}",
                 COLOR_SUCCESS,
             ),
