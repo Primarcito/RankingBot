@@ -73,6 +73,7 @@ AURA_TAUNT_TARGETS = (
 )
 MAPEO_LOG_CHANNEL_ID = 1505954990756204755
 MAPEO_ANALYSIS_CHECKPOINT_KEY = "mapeo_analysis_checkpoint"
+MAPEO_MAX_WEEKLY_POINTS = 30
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -1011,9 +1012,8 @@ def get_mapeo_analysis_start(week_start: datetime):
 
 def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: datetime, confirmed_by=None):
     summary = analysis["summary"]
-    multiplier = get_puntos("mapeo") or 1
     total_weight = sum(row["score"] for row in analysis["ranking"])
-    point_pool = len(analysis["ranking"]) * multiplier
+    top_weight = max((row["score"] for row in analysis["ranking"]), default=0)
     embed = discord.Embed(
         title="Analisis de mapeo",
         description=(
@@ -1022,9 +1022,8 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
             f"Peso: `Road unica 1 | Priority 0.15 | RELOCK 0.15 | Duplicada 0`\n"
-            f"Multiplicador Mapeo: `x{multiplier}`\n"
-            f"Bolsa semanal: `{len(analysis['ranking'])} jugadores x {multiplier} = {mapping_analysis.format_score(point_pool)}` pts\n"
-            f"Peso total: `{mapping_analysis.format_score(total_weight)}`"
+            f"Tope mejor aporte: `{MAPEO_MAX_WEEKLY_POINTS}` pts\n"
+            f"Peso top: `{mapping_analysis.format_score(top_weight)}` | Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
         color=COLOR_SUCCESS if confirmed_by else COLOR_WARNING,
     )
@@ -1046,13 +1045,13 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
         value=(
             "Solo la primera ruta `From -> To` cuenta como ruta util. "
             "Las repeticiones quedan en duplicados y suman `0` peso. "
-            "Los puntos finales se reparten proporcionalmente desde la bolsa semanal."
+            "El mejor aporte recibe el tope y los demas escalan proporcionalmente; se redondea al final."
         ),
         inline=False,
     )
     embed.add_field(
         name="Ranking",
-        value=mapping_analysis.build_ranking_table(analysis["ranking"], multiplier, point_pool),
+        value=mapping_analysis.build_ranking_table(analysis["ranking"], MAPEO_MAX_WEEKLY_POINTS),
         inline=False,
     )
     if confirmed_by:
@@ -1061,10 +1060,8 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
 
 
 def build_mapeo_analysis_files(analysis: dict):
-    multiplier = get_puntos("mapeo") or 1
-    point_pool = len(analysis["ranking"]) * multiplier
     return [
-        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], multiplier, point_pool), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], MAPEO_MAX_WEEKLY_POINTS), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]

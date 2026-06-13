@@ -296,25 +296,24 @@ def format_score(score):
     return f"{score:.2f}".rstrip("0").rstrip(".")
 
 
-def final_points_for_row(row, total_weight, point_pool):
-    if total_weight <= 0:
+def final_points_for_row(row, top_weight, max_points):
+    if top_weight <= 0 or row["score"] <= 0:
         return 0
-    return (row["score"] / total_weight) * point_pool
+    return max(1, round((row["score"] / top_weight) * max_points))
 
 
-def build_ranking_table(ranking, multiplier=1, point_pool=None, limit=12):
+def build_ranking_table(ranking, max_points=30, limit=12):
     if not ranking:
         return "Sin eventos validos."
 
-    total_weight = sum(row["score"] for row in ranking)
-    point_pool = point_pool if point_pool is not None else total_weight * multiplier
+    top_weight = max((row["score"] for row in ranking), default=0)
     lines = [
         " # Jugador        U Dup Pri Rel  Peso  Pts",
         "-- -------------- - --- --- --- ----- ----",
     ]
     for row in ranking[:limit]:
         player = display_row_player(row)[:14].ljust(14)
-        final_points = final_points_for_row(row, total_weight, point_pool)
+        final_points = final_points_for_row(row, top_weight, max_points)
         lines.append(
             f"{str(row['rank']).rjust(2)} {player} "
             f"{str(row['road_unique']).rjust(1)} "
@@ -343,9 +342,8 @@ def build_duplicates_table(duplicates, limit=8):
     return "\n".join(lines)[:1000]
 
 
-def ranking_csv_bytes(ranking, multiplier=1, point_pool=None):
-    total_weight = sum(row["score"] for row in ranking)
-    point_pool = point_pool if point_pool is not None else total_weight * multiplier
+def ranking_csv_bytes(ranking, max_points=30):
+    top_weight = max((row["score"] for row in ranking), default=0)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -358,7 +356,7 @@ def ranking_csv_bytes(ranking, multiplier=1, point_pool=None):
         "prioridades",
         "relocks",
         "peso_base",
-        "multiplicador",
+        "tope_puntos",
         "puntos_finales",
     ])
     for row in ranking:
@@ -372,8 +370,8 @@ def ranking_csv_bytes(ranking, multiplier=1, point_pool=None):
             row["priority"],
             row["relock"],
             format_score(row["score"]),
-            multiplier,
-            format_score(final_points_for_row(row, total_weight, point_pool)),
+            max_points,
+            final_points_for_row(row, top_weight, max_points),
         ])
     return io.BytesIO(output.getvalue().encode("utf-8"))
 
