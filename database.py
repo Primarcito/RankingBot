@@ -92,6 +92,17 @@ def init_db():
                 value TEXT
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS direct_point_awards (
+                source_key TEXT,
+                user_id TEXT,
+                username TEXT,
+                actividad TEXT,
+                points INTEGER,
+                fecha TEXT,
+                PRIMARY KEY (source_key, user_id)
+            )
+        """)
         c.execute("PRAGMA table_info(evidence_messages)")
         cols = [row[1] for row in c.fetchall()]
         if "status" not in cols:
@@ -447,6 +458,7 @@ def subtract_activity(user_id: str, username: str, actividad: str, cantidad: int
 def reset_all():
     with get_conn() as conn:
         conn.execute("DELETE FROM scouts")
+        conn.execute("DELETE FROM direct_point_awards")
         conn.commit()
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -494,7 +506,49 @@ def calc_puntos_totales(row) -> int:
     total = 0
     for i, col in enumerate(COLS):
         total += row[i + 2] * config.get(col, 0)
+    total += get_direct_points(str(row[0]))
     return total
+
+def get_direct_points(user_id: str) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(points), 0) FROM direct_point_awards WHERE user_id=?",
+            (str(user_id),)
+        ).fetchone()
+    return int(row[0] or 0)
+
+def add_direct_point_awards(source_key: str, actividad: str, awards):
+    fecha = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM direct_point_awards WHERE source_key=? LIMIT 1",
+            (source_key,)
+        ).fetchone()
+        if existing:
+            return False
+
+        for user_id, username, points in awards:
+            points = int(points or 0)
+            if points <= 0:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                (str(user_id), username)
+            )
+            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (username, str(user_id)))
+            conn.execute(
+                """
+                INSERT INTO direct_point_awards (source_key, user_id, username, actividad, points, fecha)
+                VALUES (?,?,?,?,?,?)
+                """,
+                (source_key, str(user_id), username, actividad, points, fecha)
+            )
+            conn.execute(
+                "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
+                (str(user_id), username, actividad, points, points, fecha, "puntos_directos")
+            )
+        conn.commit()
+    return True
 
 def get_nivel(puntos: int) -> tuple[str, str]:
     if puntos >= 120:
