@@ -59,13 +59,13 @@ def parse_mapping_message(message):
     )
 
     if event_type == "road":
-        event.from_map = clean_value(field_value(fields, "From") or labeled_value(text, "From"))
-        event.to_map = clean_value(field_value(fields, "To") or labeled_value(text, "To"))
+        event.from_map = clean_map_value(field_value(fields, "From") or labeled_value(text, "From"))
+        event.to_map = clean_map_value(field_value(fields, "To") or labeled_value(text, "To"))
         event.link_id = clean_value(field_value(fields, "Link ID", "Link") or labeled_value(text, "Link ID", "Link"))
         if not event.from_map or not event.to_map:
             return None
     else:
-        event.map_name = clean_value(
+        event.map_name = clean_map_value(
             field_value(fields, "Map", "Mapa")
             or labeled_value(text, "Map", "Mapa")
         )
@@ -217,21 +217,43 @@ def parse_player(text):
     if not text:
         return "", ""
 
-    mention = re.search(r"<@!?(\d{15,25})>", text)
+    mention = re.search(r"<@\s*!?\s*(\d{15,25})\s*>", text)
     discord_id = mention.group(1) if mention else ""
 
-    paren_id = re.search(r"\((\d{15,25})\)", text)
+    paren_id = re.search(r"\(\s*(\d{15,25})\s*\)", text)
     if paren_id:
         discord_id = paren_id.group(1)
 
-    name = re.sub(r"<@!?\d{15,25}>", "", text)
-    name = re.sub(r"\(\d{15,25}\)", "", name)
-    name = name.strip().lstrip("@").strip()
-    return name or text, discord_id
+    bare_id = re.search(r"\b\d{15,25}\b", text)
+    if bare_id and not discord_id:
+        discord_id = bare_id.group(0)
+
+    name = re.sub(r"<@\s*!?\s*\d{15,25}\s*>", "", text)
+    name = re.sub(r"\(\s*\d{15,25}\s*\)", "", name)
+    name = re.sub(r"\b\d{15,25}\b", "", name)
+    name = cleanup_player_name(name)
+    return name or (f"<@{discord_id}>" if discord_id else text), discord_id
 
 
 def clean_value(value):
-    return re.sub(r"\s+", " ", str(value or "")).strip()
+    text = str(value or "")
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def clean_map_value(value):
+    text = clean_value(value)
+    text = re.sub(r"<a?:[^:]+:\d+>", "", text)
+    text = "".join(ch for ch in text if ch.isalnum() or ch in " -'_")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def cleanup_player_name(value):
+    text = clean_value(value)
+    text = text.strip(" @()[]{}|:-")
+    if not normalize_label(text):
+        return ""
+    return text
 
 
 def normalize_text(text):
@@ -262,6 +284,14 @@ def display_player(event):
     return f"{event.player} ({event.discord_id})" if event.discord_id else event.player
 
 
+def display_row_player(row):
+    player = cleanup_player_name(row.get("player", ""))
+    if player and not player.startswith("<@"):
+        return player
+    discord_id = row.get("discord_id", "")
+    return f"Usuario {discord_id[-4:]}" if discord_id else "Desconocido"
+
+
 def format_score(score):
     return f"{score:.2f}".rstrip("0").rstrip(".")
 
@@ -275,7 +305,7 @@ def build_ranking_table(ranking, limit=12):
         "-- -------------- - --- --- --- -----",
     ]
     for row in ranking[:limit]:
-        player = row["player"][:14].ljust(14)
+        player = display_row_player(row)[:14].ljust(14)
         lines.append(
             f"{str(row['rank']).rjust(2)} {player} "
             f"{str(row['road_unique']).rjust(1)} "

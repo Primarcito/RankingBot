@@ -960,6 +960,7 @@ async def analizar_mapeo(interaction: discord.Interaction):
         scanned += 1
         event = mapping_analysis.parse_mapping_message(message)
         if event:
+            await enrich_mapping_event_player(message.guild, event)
             events.append(event)
             if not latest_event_at or message.created_at > latest_event_at:
                 latest_event_at = message.created_at
@@ -976,6 +977,21 @@ async def analizar_mapeo(interaction: discord.Interaction):
         files=build_mapeo_analysis_files(analysis),
         view=MapeoAnalysisView(analysis, scanned, analysis_start, latest_event_at),
     )
+
+
+async def enrich_mapping_event_player(guild: discord.Guild, event):
+    if not event.discord_id:
+        return
+
+    member = guild.get_member(int(event.discord_id))
+    if not member:
+        try:
+            member = await guild.fetch_member(int(event.discord_id))
+        except (discord.HTTPException, ValueError):
+            member = None
+
+    if member and not member.bot:
+        event.player = member.display_name
 
 
 def get_mapeo_analysis_start(week_start: datetime):
@@ -1079,6 +1095,20 @@ class MapeoAnalysisView(discord.ui.View):
             embed=embed,
             view=self,
         )
+
+
+@tree.command(name="reset_analisis_mapeo", description="Reinicia el checkpoint semanal del analisis de mapeo")
+async def reset_analisis_mapeo(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    week_start = current_weekly_ranking_start()
+    set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, week_start.isoformat())
+    await interaction.response.send_message(
+        f"Checkpoint de mapeo reiniciado a `{week_start.strftime('%Y-%m-%d %H:%M UTC')}`.",
+        ephemeral=True,
+    )
 
 
 @tree.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
