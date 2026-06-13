@@ -975,7 +975,6 @@ async def analizar_mapeo(interaction: discord.Interaction):
     analysis = mapping_analysis.analyze_mapping_events(events)
     await interaction.followup.send(
         embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start),
-        files=build_mapeo_analysis_files(analysis),
         view=MapeoAnalysisView(analysis, scanned, analysis_start, latest_event_at),
     )
 
@@ -1054,6 +1053,11 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
         value=mapping_analysis.build_ranking_table(analysis["ranking"], MAPEO_MAX_WEEKLY_POINTS),
         inline=False,
     )
+    embed.add_field(
+        name="Duplicados",
+        value=mapping_analysis.build_duplicates_summary(analysis["duplicates"]),
+        inline=False,
+    )
     if confirmed_by:
         embed.add_field(name="Estado", value=f"Enviado a revision por {confirmed_by.mention}", inline=False)
     return embed
@@ -1092,7 +1096,7 @@ class MapeoAnalysisView(discord.ui.View):
                 return
 
         embed = build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, interaction.user)
-        await review_channel.send(embed=embed, files=build_mapeo_analysis_files(self.analysis))
+        await review_channel.send(embed=embed)
 
         if self.latest_event_at:
             set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, self.latest_event_at.isoformat())

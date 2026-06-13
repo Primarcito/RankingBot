@@ -308,20 +308,20 @@ def build_ranking_table(ranking, max_points=30, limit=12):
 
     top_weight = max((row["score"] for row in ranking), default=0)
     lines = [
-        " # Jugador        U Dup Pri Rel  Peso  Pts",
-        "-- -------------- - --- --- --- ----- ----",
+        " # Jugador        Uniq Dup Estr Peso Pts",
+        "-- -------------- ---- --- ---- ---- ---",
     ]
     for row in ranking[:limit]:
         player = display_row_player(row)[:14].ljust(14)
         final_points = final_points_for_row(row, top_weight, max_points)
+        strategic = row["priority"] + row["relock"]
         lines.append(
             f"{str(row['rank']).rjust(2)} {player} "
-            f"{str(row['road_unique']).rjust(1)} "
+            f"{str(row['road_unique']).rjust(4)} "
             f"{str(row['road_duplicates']).rjust(3)} "
-            f"{str(row['priority']).rjust(3)} "
-            f"{str(row['relock']).rjust(3)} "
-            f"{format_score(row['score']).rjust(5)} "
-            f"{format_score(final_points).rjust(4)}"
+            f"{str(strategic).rjust(4)} "
+            f"{format_score(row['score']).rjust(4)} "
+            f"{format_score(final_points).rjust(3)}"
         )
     if len(ranking) > limit:
         lines.append(f"... y {len(ranking) - limit} mas")
@@ -340,6 +340,34 @@ def build_duplicates_table(duplicates, limit=8):
     if len(duplicates) > limit:
         lines.append(f"... y {len(duplicates) - limit} duplicados mas")
     return "\n".join(lines)[:1000]
+
+
+def build_duplicates_summary(duplicates, limit=5):
+    if not duplicates:
+        return "No encontre rutas duplicadas."
+
+    lines = [f"Total rutas duplicadas: `{len(duplicates)}`"]
+    for item in duplicates[:limit]:
+        repeats = max(0, len(item["message_ids"]) - 1)
+        players = unique_preserve_order(item["players"])
+        lines.append(
+            f"`{item['from']} -> {item['to']}` x{repeats + 1} "
+            f"({', '.join(players[:3])})"
+        )
+    if len(duplicates) > limit:
+        lines.append(f"... y {len(duplicates) - limit} mas")
+    return "\n".join(lines)[:1000]
+
+
+def unique_preserve_order(items):
+    result = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def ranking_csv_bytes(ranking, max_points=30):
