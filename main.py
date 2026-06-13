@@ -1013,6 +1013,7 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
     summary = analysis["summary"]
     multiplier = get_puntos("mapeo") or 1
     total_weight = sum(row["score"] for row in analysis["ranking"])
+    point_pool = len(analysis["ranking"]) * multiplier
     embed = discord.Embed(
         title="Analisis de mapeo",
         description=(
@@ -1022,7 +1023,8 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
             f"Eventos detectados: `{summary['total_events']}`\n"
             f"Peso: `Road unica 1 | Priority 0.15 | RELOCK 0.15 | Duplicada 0`\n"
             f"Multiplicador Mapeo: `x{multiplier}`\n"
-            f"Total final: `{mapping_analysis.format_score(total_weight * multiplier)}` pts"
+            f"Bolsa semanal: `{len(analysis['ranking'])} jugadores x {multiplier} = {mapping_analysis.format_score(point_pool)}` pts\n"
+            f"Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
         color=COLOR_SUCCESS if confirmed_by else COLOR_WARNING,
     )
@@ -1044,18 +1046,13 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
         value=(
             "Solo la primera ruta `From -> To` cuenta como ruta util. "
             "Las repeticiones quedan en duplicados y suman `0` peso. "
-            "Los puntos finales salen de `peso * multiplicador Mapeo`."
+            "Los puntos finales se reparten proporcionalmente desde la bolsa semanal."
         ),
         inline=False,
     )
     embed.add_field(
         name="Ranking",
-        value=mapping_analysis.build_ranking_table(analysis["ranking"], multiplier),
-        inline=False,
-    )
-    embed.add_field(
-        name="Rutas duplicadas",
-        value=mapping_analysis.build_duplicates_table(analysis["duplicates"]),
+        value=mapping_analysis.build_ranking_table(analysis["ranking"], multiplier, point_pool),
         inline=False,
     )
     if confirmed_by:
@@ -1065,8 +1062,9 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
 
 def build_mapeo_analysis_files(analysis: dict):
     multiplier = get_puntos("mapeo") or 1
+    point_pool = len(analysis["ranking"]) * multiplier
     return [
-        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], multiplier), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], multiplier, point_pool), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]

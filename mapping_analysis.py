@@ -296,17 +296,25 @@ def format_score(score):
     return f"{score:.2f}".rstrip("0").rstrip(".")
 
 
-def build_ranking_table(ranking, multiplier=1, limit=12):
+def final_points_for_row(row, total_weight, point_pool):
+    if total_weight <= 0:
+        return 0
+    return (row["score"] / total_weight) * point_pool
+
+
+def build_ranking_table(ranking, multiplier=1, point_pool=None, limit=12):
     if not ranking:
         return "Sin eventos validos."
 
+    total_weight = sum(row["score"] for row in ranking)
+    point_pool = point_pool if point_pool is not None else total_weight * multiplier
     lines = [
         " # Jugador        U Dup Pri Rel  Peso  Pts",
         "-- -------------- - --- --- --- ----- ----",
     ]
     for row in ranking[:limit]:
         player = display_row_player(row)[:14].ljust(14)
-        final_points = row["score"] * multiplier
+        final_points = final_points_for_row(row, total_weight, point_pool)
         lines.append(
             f"{str(row['rank']).rjust(2)} {player} "
             f"{str(row['road_unique']).rjust(1)} "
@@ -335,7 +343,9 @@ def build_duplicates_table(duplicates, limit=8):
     return "\n".join(lines)[:1000]
 
 
-def ranking_csv_bytes(ranking, multiplier=1):
+def ranking_csv_bytes(ranking, multiplier=1, point_pool=None):
+    total_weight = sum(row["score"] for row in ranking)
+    point_pool = point_pool if point_pool is not None else total_weight * multiplier
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -363,7 +373,7 @@ def ranking_csv_bytes(ranking, multiplier=1):
             row["relock"],
             format_score(row["score"]),
             multiplier,
-            format_score(row["score"] * multiplier),
+            format_score(final_points_for_row(row, total_weight, point_pool)),
         ])
     return io.BytesIO(output.getvalue().encode("utf-8"))
 
