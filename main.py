@@ -1011,6 +1011,8 @@ def get_mapeo_analysis_start(week_start: datetime):
 
 def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: datetime, confirmed_by=None):
     summary = analysis["summary"]
+    multiplier = get_puntos("mapeo") or 1
+    total_weight = sum(row["score"] for row in analysis["ranking"])
     embed = discord.Embed(
         title="Analisis de mapeo",
         description=(
@@ -1018,7 +1020,9 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
             f"Desde: `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
-            f"Reglas: `Road unica +1 | Priority +0.15 | RELOCK +0.15 | Duplicada +0`"
+            f"Peso: `Road unica 1 | Priority 0.15 | RELOCK 0.15 | Duplicada 0`\n"
+            f"Multiplicador Mapeo: `x{multiplier}`\n"
+            f"Total final: `{mapping_analysis.format_score(total_weight * multiplier)}` pts"
         ),
         color=COLOR_SUCCESS if confirmed_by else COLOR_WARNING,
     )
@@ -1039,13 +1043,14 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
         name="Criterio",
         value=(
             "Solo la primera ruta `From -> To` cuenta como ruta util. "
-            "Las repeticiones quedan en duplicados y suman `0` puntos."
+            "Las repeticiones quedan en duplicados y suman `0` peso. "
+            "Los puntos finales salen de `peso * multiplicador Mapeo`."
         ),
         inline=False,
     )
     embed.add_field(
         name="Ranking",
-        value=mapping_analysis.build_ranking_table(analysis["ranking"]),
+        value=mapping_analysis.build_ranking_table(analysis["ranking"], multiplier),
         inline=False,
     )
     embed.add_field(
@@ -1059,8 +1064,9 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
 
 
 def build_mapeo_analysis_files(analysis: dict):
+    multiplier = get_puntos("mapeo") or 1
     return [
-        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"]), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], multiplier), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]

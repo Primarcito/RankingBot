@@ -296,23 +296,25 @@ def format_score(score):
     return f"{score:.2f}".rstrip("0").rstrip(".")
 
 
-def build_ranking_table(ranking, limit=12):
+def build_ranking_table(ranking, multiplier=1, limit=12):
     if not ranking:
         return "Sin eventos validos."
 
     lines = [
-        " # Jugador        U Dup Pri Rel   Pts",
-        "-- -------------- - --- --- --- -----",
+        " # Jugador        U Dup Pri Rel  Peso  Pts",
+        "-- -------------- - --- --- --- ----- ----",
     ]
     for row in ranking[:limit]:
         player = display_row_player(row)[:14].ljust(14)
+        final_points = row["score"] * multiplier
         lines.append(
             f"{str(row['rank']).rjust(2)} {player} "
             f"{str(row['road_unique']).rjust(1)} "
             f"{str(row['road_duplicates']).rjust(3)} "
             f"{str(row['priority']).rjust(3)} "
             f"{str(row['relock']).rjust(3)} "
-            f"{format_score(row['score']).rjust(5)}"
+            f"{format_score(row['score']).rjust(5)} "
+            f"{format_score(final_points).rjust(4)}"
         )
     if len(ranking) > limit:
         lines.append(f"... y {len(ranking) - limit} mas")
@@ -333,7 +335,7 @@ def build_duplicates_table(duplicates, limit=8):
     return "\n".join(lines)[:1000]
 
 
-def ranking_csv_bytes(ranking):
+def ranking_csv_bytes(ranking, multiplier=1):
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -345,7 +347,9 @@ def ranking_csv_bytes(ranking):
         "rutas_duplicadas",
         "prioridades",
         "relocks",
-        "puntaje_total",
+        "peso_base",
+        "multiplicador",
+        "puntos_finales",
     ])
     for row in ranking:
         writer.writerow([
@@ -358,6 +362,8 @@ def ranking_csv_bytes(ranking):
             row["priority"],
             row["relock"],
             format_score(row["score"]),
+            multiplier,
+            format_score(row["score"] * multiplier),
         ])
     return io.BytesIO(output.getvalue().encode("utf-8"))
 
