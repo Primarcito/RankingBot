@@ -72,6 +72,7 @@ AURA_TAUNT_TARGETS = (
     (1435778824775274581, 1514156352463700051),
 )
 MAPEO_LOG_CHANNEL_ID = 1505954990756204755
+MAPEO_ANALYSIS_CHECKPOINT_KEY = "mapeo_analysis_checkpoint"
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -951,32 +952,59 @@ async def analizar_mapeo(interaction: discord.Interaction):
             return
 
     week_start = current_weekly_ranking_start()
+    analysis_start = get_mapeo_analysis_start(week_start)
     events = []
     scanned = 0
-    async for message in channel.history(limit=None, after=week_start):
+    latest_event_at = None
+    async for message in channel.history(limit=None, after=analysis_start):
         scanned += 1
         event = mapping_analysis.parse_mapping_message(message)
         if event:
             events.append(event)
+            if not latest_event_at or message.created_at > latest_event_at:
+                latest_event_at = message.created_at
 
     if not events:
         await interaction.followup.send(
-            f"No encontre eventos validos de mapeo desde `{week_start.strftime('%Y-%m-%d %H:%M UTC')}`."
+            f"No encontre eventos validos de mapeo desde `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`."
         )
         return
 
     analysis = mapping_analysis.analyze_mapping_events(events)
+    await interaction.followup.send(
+        embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start),
+        files=build_mapeo_analysis_files(analysis),
+        view=MapeoAnalysisView(analysis, scanned, analysis_start, latest_event_at),
+    )
+
+
+def get_mapeo_analysis_start(week_start: datetime):
+    checkpoint = get_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY)
+    if not checkpoint:
+        return week_start
+
+    try:
+        checkpoint_at = datetime.fromisoformat(checkpoint)
+    except ValueError:
+        return week_start
+
+    if checkpoint_at.tzinfo is None:
+        checkpoint_at = checkpoint_at.replace(tzinfo=timezone.utc)
+    return max(week_start, checkpoint_at)
+
+
+def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: datetime, confirmed_by=None):
     summary = analysis["summary"]
     embed = discord.Embed(
         title="Analisis de mapeo",
         description=(
             f"Canal: <#{MAPEO_LOG_CHANNEL_ID}>\n"
-            f"Desde: `{week_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
+            f"Desde: `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
             f"Reglas: `Road unica +1 | Priority +0.5 | RELOCK +0.75 | Duplicada -0.5`"
         ),
-        color=COLOR_WARNING,
+        color=COLOR_SUCCESS if confirmed_by else COLOR_WARNING,
     )
     embed.add_field(
         name="Resumen general",
@@ -1001,13 +1029,56 @@ async def analizar_mapeo(interaction: discord.Interaction):
         value=mapping_analysis.build_duplicates_table(analysis["duplicates"]),
         inline=False,
     )
+    if confirmed_by:
+        embed.add_field(name="Estado", value=f"Enviado a revision por {confirmed_by.mention}", inline=False)
+    return embed
 
-    files = [
+
+def build_mapeo_analysis_files(analysis: dict):
+    return [
         discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"]), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]
-    await interaction.followup.send(embed=embed, files=files)
+
+
+class MapeoAnalysisView(discord.ui.View):
+    def __init__(self, analysis: dict, scanned: int, analysis_start: datetime, latest_event_at: datetime | None):
+        super().__init__(timeout=1800)
+        self.analysis = analysis
+        self.scanned = scanned
+        self.analysis_start = analysis_start
+        self.latest_event_at = latest_event_at
+
+    @discord.ui.button(label="Enviar a administrar evidencias", style=discord.ButtonStyle.success)
+    async def send_to_review(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso para confirmar este analisis.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        review_channel = interaction.client.get_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+        if not review_channel:
+            try:
+                review_channel = await interaction.client.fetch_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+            except discord.HTTPException:
+                await interaction.followup.send("No pude abrir administrar evidencias.", ephemeral=True)
+                return
+
+        embed = build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, interaction.user)
+        await review_channel.send(embed=embed, files=build_mapeo_analysis_files(self.analysis))
+
+        if self.latest_event_at:
+            set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, self.latest_event_at.isoformat())
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(
+            content="Analisis enviado a administrar evidencias. Este rango ya no se contara en el proximo analisis.",
+            embed=embed,
+            view=self,
+        )
 
 
 @tree.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
