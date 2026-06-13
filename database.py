@@ -73,6 +73,7 @@ def init_db():
                 message_id TEXT,
                 user_id TEXT,
                 username TEXT,
+                cantidad INTEGER DEFAULT 1,
                 PRIMARY KEY (message_id, user_id)
             )
         """)
@@ -99,6 +100,10 @@ def init_db():
             c.execute("ALTER TABLE evidence_messages ADD COLUMN review_message_id TEXT")
         if "thread_id" not in cols:
             c.execute("ALTER TABLE evidence_messages ADD COLUMN thread_id TEXT")
+        c.execute("PRAGMA table_info(evidence_participants)")
+        participant_cols = [row[1] for row in c.fetchall()]
+        if "cantidad" not in participant_cols:
+            c.execute("ALTER TABLE evidence_participants ADD COLUMN cantidad INTEGER DEFAULT 1")
         # Valores por defecto de configuración
         defaults = list(DEFAULT_ACTIVITY_POINTS.items())
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
@@ -186,15 +191,19 @@ def create_evidence_review(message_id: str, user_id: str, username: str, activid
             )
         except sqlite3.IntegrityError:
             return 0
-        for participant_id, participant_name in participants:
+        for participant in participants:
+            participant_id, participant_name, cantidad = normalize_participant_entry(participant)
             conn.execute(
                 "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
                 (str(participant_id), participant_name)
             )
             conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
             conn.execute(
-                "INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username) VALUES (?,?,?)",
-                (message_id, str(participant_id), participant_name)
+                """
+                INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username, cantidad)
+                VALUES (?,?,?,?)
+                """,
+                (message_id, str(participant_id), participant_name, cantidad)
             )
         conn.commit()
     return puntos_unit
@@ -243,15 +252,19 @@ def add_evidence_participants(message_id: str, participants):
         ).fetchone()
         if not row or row[0] != "pending":
             return False
-        for participant_id, participant_name in participants:
+        for participant in participants:
+            participant_id, participant_name, cantidad = normalize_participant_entry(participant)
             conn.execute(
                 "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
                 (str(participant_id), participant_name)
             )
             conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
             conn.execute(
-                "INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username) VALUES (?,?,?)",
-                (message_id, str(participant_id), participant_name)
+                """
+                INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username, cantidad)
+                VALUES (?,?,?,?)
+                """,
+                (message_id, str(participant_id), participant_name, cantidad)
             )
         conn.commit()
     return True
@@ -260,6 +273,14 @@ def get_evidence_participants(message_id: str):
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT user_id, username FROM evidence_participants WHERE message_id=?",
+            (message_id,)
+        ).fetchall()
+    return rows
+
+def get_evidence_participants_with_quantity(message_id: str):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT user_id, username, cantidad FROM evidence_participants WHERE message_id=?",
             (message_id,)
         ).fetchall()
     return rows
@@ -296,23 +317,24 @@ def approve_evidence(message_id: str):
         user_id, actividad, _, _, review_message_id = row
         puntos = get_puntos(actividad)
         participants = conn.execute(
-            "SELECT user_id, username FROM evidence_participants WHERE message_id=?",
+            "SELECT user_id, username, cantidad FROM evidence_participants WHERE message_id=?",
             (message_id,)
         ).fetchall()
         if not participants:
             scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
-            participants = [(user_id, scout[0] if scout else user_id)]
+            participants = [(user_id, scout[0] if scout else user_id, 1)]
 
-        for participant_id, username in participants:
+        for participant_id, username, cantidad in participants:
+            cantidad = max(1, int(cantidad or 1))
             conn.execute(
                 "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
                 (str(participant_id), username)
             )
             conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (username, str(participant_id)))
-            conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + 1 WHERE user_id=?", (participant_id,))
+            conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + ? WHERE user_id=?", (cantidad, participant_id))
             conn.execute(
                 "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-                (participant_id, username, actividad, 1, puntos, datetime.utcnow().isoformat(), "evidencia_aprobada")
+                (participant_id, username, actividad, cantidad, puntos * cantidad, datetime.utcnow().isoformat(), "evidencia_aprobada")
             )
         conn.execute(
             "UPDATE evidence_messages SET status='approved' WHERE message_id=?",
@@ -320,6 +342,14 @@ def approve_evidence(message_id: str):
         )
         conn.commit()
     return user_id, actividad, puntos, review_message_id
+
+def normalize_participant_entry(participant):
+    if len(participant) >= 3:
+        participant_id, participant_name, cantidad = participant[:3]
+    else:
+        participant_id, participant_name = participant[:2]
+        cantidad = 1
+    return str(participant_id), participant_name, max(1, int(cantidad or 1))
 
 def find_scout_by_name(name: str):
     target = normalize_name(name)

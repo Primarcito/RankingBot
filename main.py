@@ -21,6 +21,7 @@ from database import (
     get_evidence_review_message_id,
     get_all_scouts,
     get_bot_state,
+    get_puntos,
     get_nivel,
     get_pending_evidence_message_ids,
     get_scout_aliases,
@@ -112,7 +113,10 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
+    if not message.guild:
+        return
+
+    if message.author.bot:
         return
 
     if should_reply_to_aura_taunt(message.content):
@@ -190,8 +194,6 @@ async def on_message(message: discord.Message):
     )
     if ocr_hits:
         embed.add_field(name="Detectado", value=", ".join(ocr_hits)[:1000], inline=False)
-    if ocr_text:
-        embed.add_field(name="OCR", value=ocr_text[:1000], inline=False)
     if message.content.strip():
         embed.add_field(name="Texto", value=message.content[:1000], inline=False)
     if len(participants) > 1:
@@ -350,6 +352,205 @@ async def get_evidence_participants(message: discord.Message):
         participants[str(user_id)] = display_name
 
     return list(participants.items()), unresolved, suggestions
+
+SUMMARY_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{2,40}")
+SUMMARY_TIME_RE = re.compile(r"(?:(\d{1,3})\s*h)?\s*(\d{1,2})\s*m\b", re.IGNORECASE)
+SUMMARY_MAPS_RE = re.compile(r"(\d{1,3})\s*(?:mapas?|maps?)\b", re.IGNORECASE)
+SCOUTEO_HOURS_PER_POINT = 5
+SCOUTEO_MAPS_PER_POINT = 3
+SCOUTEO_HOURS_SETTING_KEY = "scouteo_count_hours_per_point"
+SCOUTEO_MAPS_SETTING_KEY = "scouteo_count_maps_per_point"
+
+def get_scouteo_count_settings():
+    return (
+        int(get_bot_state(SCOUTEO_HOURS_SETTING_KEY) or SCOUTEO_HOURS_PER_POINT),
+        int(get_bot_state(SCOUTEO_MAPS_SETTING_KEY) or SCOUTEO_MAPS_PER_POINT),
+    )
+
+def set_scouteo_count_settings(hours_per_point: int, maps_per_point: int):
+    set_bot_state(SCOUTEO_HOURS_SETTING_KEY, str(max(1, int(hours_per_point))))
+    set_bot_state(SCOUTEO_MAPS_SETTING_KEY, str(max(1, int(maps_per_point))))
+
+def get_embed_search_text(message: discord.Message):
+    parts = [message.content or ""]
+    for embed in message.embeds:
+        parts.extend([
+            embed.title or "",
+            embed.description or "",
+            getattr(embed.footer, "text", "") or "",
+            getattr(embed.author, "name", "") or "",
+        ])
+        for field in embed.fields:
+            parts.append(field.name or "")
+            parts.append(field.value or "")
+    return "\n".join(part for part in parts if part)
+
+def extract_scouteo_summary_records(message: discord.Message):
+    text = get_embed_search_text(message)
+    if not text:
+        return []
+
+    normalized = text.lower()
+    if "resumen del dia" not in normalized and "resumen del día" not in normalized:
+        return []
+    if "scout" not in normalized or "mapas" not in normalized:
+        return []
+
+    records = []
+    seen = set()
+    for line in text.splitlines():
+        if "mapas" not in line.lower():
+            continue
+
+        time_match = SUMMARY_TIME_RE.search(line)
+        maps_match = SUMMARY_MAPS_RE.search(line)
+        if not time_match or not maps_match:
+            continue
+
+        name = extract_scouteo_summary_name(line[:time_match.start()])
+        if not name:
+            continue
+
+        key = participant_tools.normalize_name(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        hours = int(time_match.group(1) or 0)
+        minutes = int(time_match.group(2))
+        maps = int(maps_match.group(1))
+        records.append({
+            "name": name,
+            "hours": hours,
+            "minutes": minutes,
+            "maps": maps,
+        })
+    return records
+
+def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_per_point: int):
+    calculated = []
+    for record in records:
+        item = dict(record)
+        hour_points = ((item["hours"] * 60) + item["minutes"]) // (hours_per_point * 60)
+        map_points = item["maps"] // maps_per_point
+        item["hour_points"] = hour_points
+        item["map_points"] = map_points
+        item["total"] = hour_points + map_points
+        calculated.append(item)
+    return calculated
+
+def extract_scouteo_summary_name(text: str):
+    candidates = [
+        token.strip("._-")
+        for token in SUMMARY_NAME_RE.findall(text or "")
+        if not token.isdigit()
+    ]
+    return candidates[-1] if candidates else None
+
+async def handle_scouteo_summary_message(message: discord.Message):
+    if get_evidence_activity(message) != "scouteo":
+        return False
+
+    records = extract_scouteo_summary_records(message)
+    if not records:
+        return False
+
+    hours_per_point, maps_per_point = get_scouteo_count_settings()
+    records = calculate_scouteo_records(records, hours_per_point, maps_per_point)
+    return await create_scouteo_count_review(message, records, hours_per_point, maps_per_point)
+
+async def create_scouteo_count_review(
+    message: discord.Message,
+    records: list[dict],
+    hours_per_point: int,
+    maps_per_point: int,
+):
+    participant_rows = []
+    unresolved_names = []
+    suggested_participants = []
+    excluded_user_ids = set()
+    for record in records:
+        if record["total"] <= 0:
+            continue
+        participants, unresolved, suggestions = await participant_tools.resolve_names(
+            message.guild,
+            [record["name"]],
+            excluded_user_ids,
+        )
+        if participants:
+            user_id, display_name = participants[0]
+            participant_rows.append((user_id, display_name, record["total"], record))
+            excluded_user_ids.add(str(user_id))
+        else:
+            unresolved_names.extend(unresolved)
+            suggested_participants.extend(suggestions)
+
+    if not participant_rows:
+        print("[SCOUTEO SUMMARY] ignorado: sin participantes con puntos calculados")
+        return False
+
+    owner_id, owner_name, _, _ = participant_rows[0]
+    pts = create_evidence_review(
+        str(message.id),
+        owner_id,
+        owner_name,
+        "scouteo",
+        participant_rows
+    )
+    if pts <= 0:
+        print("[SCOUTEO SUMMARY] duplicado")
+        return True
+
+    review_channel = await get_review_channel(message)
+    embed = discord.Embed(
+        title="Evidencia pendiente",
+        color=COLOR_WARNING,
+        description=(
+            f"Usuario: {message.author.mention}\n"
+            f"Actividad: **{ACTIVIDADES['scouteo']['label']}**\n"
+            f"Origen: **Resumen del Dia**\n"
+            f"Reglas: `{hours_per_point}h = 1 punto | {maps_per_point} mapas = 1 punto`\n"
+            f"Total calculado: `{sum(row[2] for row in participant_rows) * pts}` pts\n"
+            f"Canal: {message.channel.mention}\n"
+            f"[Abrir evidencia]({message.jump_url})"
+        )
+    )
+    participant_text = "\n".join(
+        (
+            f"<@{user_id}> - `{cantidad * pts}` pts "
+            f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas; "
+            f"{record['hour_points']} por horas + {record['map_points']} por mapas)"
+        )
+        for user_id, _, cantidad, record in participant_rows[:20]
+    )
+    embed.add_field(name="Participantes", value=participant_text[:1000], inline=False)
+    if unresolved_names:
+        embed.add_field(
+            name="No resueltos",
+            value=", ".join(f"+{name}" for name in unresolved_names)[:1000],
+            inline=False
+        )
+    if suggested_participants:
+        embed.add_field(
+            name="Sugerencias por confirmar",
+            value=participant_tools.format_participant_suggestions(suggested_participants)[:1000],
+            inline=False
+        )
+
+    review_msg = await review_channel.send(
+        embed=embed,
+        view=EvidenceReviewView(str(message.id))
+    )
+    set_evidence_review_message(str(message.id), str(review_msg.id))
+    print(f"[SCOUTEO SUMMARY] enviado review={review_msg.id}")
+
+    if suggested_participants or unresolved_names:
+        await message.reply(
+            embed=build_participant_confirmation_embed(suggested_participants, unresolved_names),
+            mention_author=False,
+        )
+
+    return True
 
 def build_participant_confirmation_embed(suggestions: list[dict], unresolved_names: list[str]):
     has_suggestions = bool(suggestions)
@@ -533,6 +734,189 @@ async def get_review_channel(message: discord.Message):
         except discord.HTTPException:
             pass
     return message.channel
+
+
+@tree.command(name="conteo", description="Calcula scouteo desde un resumen diario por ID de mensaje")
+@app_commands.describe(id_mensaje="ID del mensaje del resumen de Mapas en este canal")
+async def conteo(interaction: discord.Interaction, id_mensaje: str):
+    if not can_review_member(interaction.user):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    try:
+        message_id = int(id_mensaje.strip())
+    except ValueError:
+        await interaction.response.send_message("Ese ID de mensaje no es valido.", ephemeral=True)
+        return
+
+    try:
+        source_message = await interaction.channel.fetch_message(message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, AttributeError):
+        await interaction.response.send_message(
+            "No pude encontrar ese mensaje en este canal. Usa el ID del resumen y ejecuta el comando en el mismo canal.",
+            ephemeral=True,
+        )
+        return
+
+    if get_evidence_activity(source_message) != "scouteo":
+        await interaction.response.send_message("Ese mensaje no esta en un canal configurado como scouteo.", ephemeral=True)
+        return
+
+    records = extract_scouteo_summary_records(source_message)
+    if not records:
+        await interaction.response.send_message("No pude leer nombres, horas y mapas en ese resumen.", ephemeral=True)
+        return
+
+    hours_per_point, maps_per_point = get_scouteo_count_settings()
+    embed = build_scouteo_count_embed(
+        source_message,
+        calculate_scouteo_records(records, hours_per_point, maps_per_point),
+        hours_per_point,
+        maps_per_point,
+    )
+    await interaction.response.send_message(
+        embed=embed,
+        view=ScouteoCountView(source_message, records, hours_per_point, maps_per_point),
+        ephemeral=True,
+    )
+
+
+def build_scouteo_count_embed(
+    source_message: discord.Message,
+    records: list[dict],
+    hours_per_point: int,
+    maps_per_point: int,
+):
+    unit_points = get_puntos("scouteo")
+    total_units = sum(record["total"] for record in records)
+    embed = discord.Embed(
+        title="Conteo de scouteo",
+        description=(
+            f"Mensaje: [abrir resumen]({source_message.jump_url})\n"
+            f"Reglas: `{hours_per_point}h = 1 punto | {maps_per_point} mapas = 1 punto`\n"
+            f"Valor Scouteo: `{unit_points}` pts por unidad\n"
+            f"Total: `{total_units * unit_points}` pts"
+        ),
+        color=COLOR_WARNING,
+    )
+    embed.add_field(
+        name="Preview",
+        value=format_scouteo_count_table(records, unit_points),
+        inline=False,
+    )
+    return embed
+
+
+def format_scouteo_count_table(records: list[dict], unit_points: int):
+    if not records:
+        return "Sin puntos calculados."
+
+    lines = [
+        "Scout        Tiempo  Map Hrs Mps Ud Pts",
+        "------------ ------- --- --- --- -- ---",
+    ]
+    for record in records[:12]:
+        name = record["name"][:12].ljust(12)
+        time_text = f"{record['hours']}h{record['minutes']:02d}m".rjust(7)
+        maps = str(record["maps"]).rjust(3)
+        hour_points = str(record["hour_points"]).rjust(3)
+        map_points = str(record["map_points"]).rjust(3)
+        total = str(record["total"]).rjust(2)
+        points = str(record["total"] * unit_points).rjust(3)
+        lines.append(f"{name} {time_text} {maps} {hour_points} {map_points} {total} {points}")
+
+    if len(records) > 12:
+        lines.append(f"... y {len(records) - 12} mas")
+
+    return f"```text\n{chr(10).join(lines)}\n```"
+
+
+class ScouteoCountView(discord.ui.View):
+    def __init__(
+        self,
+        source_message: discord.Message,
+        records: list[dict],
+        hours_per_point: int,
+        maps_per_point: int,
+    ):
+        super().__init__(timeout=300)
+        self.source_message = source_message
+        self.records = records
+        self.hours_per_point = hours_per_point
+        self.maps_per_point = maps_per_point
+
+    def calculated_records(self):
+        return calculate_scouteo_records(self.records, self.hours_per_point, self.maps_per_point)
+
+    async def refresh(self, interaction: discord.Interaction):
+        embed = build_scouteo_count_embed(
+            self.source_message,
+            self.calculated_records(),
+            self.hours_per_point,
+            self.maps_per_point,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Horas", style=discord.ButtonStyle.secondary)
+    async def change_hours(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ScouteoCountRuleModal(self, "hours"))
+
+    @discord.ui.button(label="Mapas", style=discord.ButtonStyle.secondary)
+    async def change_maps(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ScouteoCountRuleModal(self, "maps"))
+
+    @discord.ui.button(label="Enviar a revision", style=discord.ButtonStyle.success)
+    async def send_review(self, interaction: discord.Interaction, button: discord.ui.Button):
+        set_scouteo_count_settings(self.hours_per_point, self.maps_per_point)
+        created = await create_scouteo_count_review(
+            self.source_message,
+            self.calculated_records(),
+            self.hours_per_point,
+            self.maps_per_point,
+        )
+        if not created:
+            await interaction.response.send_message("No se pudo crear la revision. Puede que ya exista o no haya puntos.", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content="Conteo enviado a revision.",
+            embed=build_scouteo_count_embed(
+                self.source_message,
+                self.calculated_records(),
+                self.hours_per_point,
+                self.maps_per_point,
+            ),
+            view=self,
+        )
+
+
+class ScouteoCountRuleModal(discord.ui.Modal):
+    value = discord.ui.TextInput(label="Valor", placeholder="Ej: 5", max_length=3)
+
+    def __init__(self, view: ScouteoCountView, target: str):
+        title = "Horas para 1 punto" if target == "hours" else "Mapas para 1 punto"
+        super().__init__(title=title)
+        self.view_ref = view
+        self.target = target
+        current = view.hours_per_point if target == "hours" else view.maps_per_point
+        self.value.default = str(current)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.value.value).strip())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("Ingresa un numero mayor a 0.", ephemeral=True)
+            return
+
+        if self.target == "hours":
+            self.view_ref.hours_per_point = amount
+        else:
+            self.view_ref.maps_per_point = amount
+        await self.view_ref.refresh(interaction)
 
 
 @tree.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
