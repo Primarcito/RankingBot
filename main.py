@@ -974,7 +974,7 @@ async def analizar_mapeo(interaction: discord.Interaction):
 
     analysis = mapping_analysis.analyze_mapping_events(events)
     await interaction.followup.send(
-        embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start),
+        embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start, MAPEO_MAX_WEEKLY_POINTS),
         view=MapeoAnalysisView(analysis, scanned, analysis_start, latest_event_at),
     )
 
@@ -1009,7 +1009,14 @@ def get_mapeo_analysis_start(week_start: datetime):
     return max(week_start, checkpoint_at)
 
 
-def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: datetime, confirmed_by=None):
+def build_mapeo_analysis_embed(
+    analysis: dict,
+    scanned: int,
+    analysis_start: datetime,
+    max_points: int = MAPEO_MAX_WEEKLY_POINTS,
+    status_text: str | None = None,
+    color: int = COLOR_WARNING,
+):
     summary = analysis["summary"]
     total_weight = sum(row["score"] for row in analysis["ranking"])
     top_weight = max((row["score"] for row in analysis["ranking"]), default=0)
@@ -1021,10 +1028,10 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
             f"Peso: `Road unica 1 | Priority 0.15 | RELOCK 0.15 | Duplicada 0`\n"
-            f"Tope mejor aporte: `{MAPEO_MAX_WEEKLY_POINTS}` pts\n"
+            f"Tope mejor aporte: `{max_points}` pts\n"
             f"Peso top: `{mapping_analysis.format_score(top_weight)}` | Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
-        color=COLOR_SUCCESS if confirmed_by else COLOR_WARNING,
+        color=color,
     )
     embed.add_field(
         name="Resumen general",
@@ -1050,7 +1057,7 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
     )
     embed.add_field(
         name="Ranking",
-        value=mapping_analysis.build_ranking_table(analysis["ranking"], MAPEO_MAX_WEEKLY_POINTS),
+        value=mapping_analysis.build_ranking_table(analysis["ranking"], max_points),
         inline=False,
     )
     embed.add_field(
@@ -1058,8 +1065,8 @@ def build_mapeo_analysis_embed(analysis: dict, scanned: int, analysis_start: dat
         value=mapping_analysis.build_duplicates_summary(analysis["duplicates"]),
         inline=False,
     )
-    if confirmed_by:
-        embed.add_field(name="Estado", value=f"Enviado a revision por {confirmed_by.mention}", inline=False)
+    if status_text:
+        embed.add_field(name="Estado", value=status_text, inline=False)
     return embed
 
 
@@ -1095,19 +1102,115 @@ class MapeoAnalysisView(discord.ui.View):
                 await interaction.followup.send("No pude abrir administrar evidencias.", ephemeral=True)
                 return
 
-        embed = build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, interaction.user)
-        await review_channel.send(embed=embed)
+        embed = build_mapeo_analysis_embed(
+            self.analysis,
+            self.scanned,
+            self.analysis_start,
+            MAPEO_MAX_WEEKLY_POINTS,
+            status_text=f"Pendiente de aprobacion. Enviado por {interaction.user.mention}",
+        )
+        review_view = MapeoReviewView(self.analysis, self.scanned, self.analysis_start, self.latest_event_at)
+        review_message = await review_channel.send(embed=embed, view=review_view)
+        review_view.message = review_message
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(
+            content="Analisis enviado a administrar evidencias para revision.",
+            embed=build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, MAPEO_MAX_WEEKLY_POINTS),
+            view=self,
+        )
+
+
+class MapeoReviewView(discord.ui.View):
+    def __init__(
+        self,
+        analysis: dict,
+        scanned: int,
+        analysis_start: datetime,
+        latest_event_at: datetime | None,
+        max_points: int = MAPEO_MAX_WEEKLY_POINTS,
+    ):
+        super().__init__(timeout=86400)
+        self.analysis = analysis
+        self.scanned = scanned
+        self.analysis_start = analysis_start
+        self.latest_event_at = latest_event_at
+        self.max_points = max_points
+        self.message: discord.Message | None = None
+
+    def embed(self, status_text=None, color=COLOR_WARNING):
+        return build_mapeo_analysis_embed(
+            self.analysis,
+            self.scanned,
+            self.analysis_start,
+            self.max_points,
+            status_text=status_text,
+            color=color,
+        )
+
+    @discord.ui.button(label="Cambiar tope", style=discord.ButtonStyle.secondary)
+    async def change_max_points(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(MapeoMaxPointsModal(self))
+
+    @discord.ui.button(label="Aprobar", style=discord.ButtonStyle.success)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
 
         if self.latest_event_at:
             set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, self.latest_event_at.isoformat())
 
         for item in self.children:
             item.disabled = True
-        await interaction.message.edit(
-            content="Analisis enviado a administrar evidencias. Este rango ya no se contara en el proximo analisis.",
-            embed=embed,
+        await interaction.response.edit_message(
+            embed=self.embed(f"Aprobado por {interaction.user.mention}. Rango cerrado para futuros analisis.", COLOR_SUCCESS),
             view=self,
         )
+
+    @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            embed=self.embed(f"Rechazado por {interaction.user.mention}. No se cerro el rango.", COLOR_ERROR),
+            view=self,
+        )
+
+
+class MapeoMaxPointsModal(discord.ui.Modal):
+    value = discord.ui.TextInput(label="Tope del mejor aporte", placeholder="Ej: 30", max_length=3)
+
+    def __init__(self, review_view: MapeoReviewView):
+        super().__init__(title="Cambiar puntos de mapeo")
+        self.review_view = review_view
+        self.value.default = str(review_view.max_points)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.value.value).strip())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("Ingresa un numero mayor a 0.", ephemeral=True)
+            return
+
+        self.review_view.max_points = amount
+        await interaction.response.defer(ephemeral=True)
+        if self.review_view.message:
+            await self.review_view.message.edit(
+                embed=self.review_view.embed(f"Tope ajustado a `{amount}` pts por {interaction.user.mention}."),
+                view=self.review_view,
+            )
+        await interaction.followup.send(f"Tope actualizado a {amount} pts.", ephemeral=True)
 
 
 @tree.command(name="reset_analisis_mapeo", description="Reinicia el checkpoint semanal del analisis de mapeo")
