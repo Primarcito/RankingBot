@@ -74,7 +74,7 @@ AURA_TAUNT_TARGETS = (
 )
 MAPEO_LOG_CHANNEL_ID = 1505954990756204755
 MAPEO_ANALYSIS_CHECKPOINT_KEY = "mapeo_analysis_checkpoint"
-MAPEO_MAX_WEEKLY_POINTS = 30
+MAPEO_MAX_WEEKLY_UNITS = 10
 MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
@@ -978,7 +978,7 @@ async def analizar_mapeo(interaction: discord.Interaction):
 
     analysis = mapping_analysis.analyze_mapping_events(events)
     await interaction.followup.send(
-        embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start, MAPEO_MAX_WEEKLY_POINTS),
+        embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start, MAPEO_MAX_WEEKLY_UNITS),
         view=MapeoAnalysisView(analysis, scanned, analysis_start, latest_event_at),
     )
 
@@ -1017,7 +1017,7 @@ def build_mapeo_analysis_embed(
     analysis: dict,
     scanned: int,
     analysis_start: datetime,
-    max_points: int = MAPEO_MAX_WEEKLY_POINTS,
+    max_units: int = MAPEO_MAX_WEEKLY_UNITS,
     road_weight: float = MAPEO_ROAD_WEIGHT,
     priority_weight: float = MAPEO_PRIORITY_WEIGHT,
     relock_weight: float = MAPEO_RELOCK_WEIGHT,
@@ -1026,6 +1026,8 @@ def build_mapeo_analysis_embed(
 ):
     analysis = apply_mapeo_score_settings(analysis, road_weight, priority_weight, relock_weight)
     summary = analysis["summary"]
+    mapeo_value = get_puntos("mapeo") or 1
+    max_points = max_units * mapeo_value
     total_weight = sum(row["score"] for row in analysis["ranking"])
     top_weight = max((row["score"] for row in analysis["ranking"]), default=0)
     embed = discord.Embed(
@@ -1036,7 +1038,7 @@ def build_mapeo_analysis_embed(
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`\n"
             f"Peso: `Road unica {mapping_analysis.format_score(road_weight)} | Priority {mapping_analysis.format_score(priority_weight)} | RELOCK {mapping_analysis.format_score(relock_weight)} | Duplicada 0`\n"
-            f"Tope mejor aporte: `{max_points}` pts\n"
+            f"Tope mejor aporte: `{max_units}` unidades x `{mapeo_value}` pt Mapeo = `{max_points}` pts\n"
             f"Peso top: `{mapping_analysis.format_score(top_weight)}` | Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
         color=color,
@@ -1079,8 +1081,9 @@ def build_mapeo_analysis_embed(
 
 
 def build_mapeo_analysis_files(analysis: dict):
+    max_points = MAPEO_MAX_WEEKLY_UNITS * (get_puntos("mapeo") or 1)
     return [
-        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], MAPEO_MAX_WEEKLY_POINTS), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], max_points), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]
@@ -1159,7 +1162,7 @@ class MapeoAnalysisView(discord.ui.View):
             self.analysis,
             self.scanned,
             self.analysis_start,
-            MAPEO_MAX_WEEKLY_POINTS,
+            MAPEO_MAX_WEEKLY_UNITS,
             status_text=f"Pendiente de aprobacion. Enviado por {interaction.user.mention}",
         )
         review_view = MapeoReviewView(self.analysis, self.scanned, self.analysis_start, self.latest_event_at)
@@ -1170,7 +1173,7 @@ class MapeoAnalysisView(discord.ui.View):
             item.disabled = True
         await interaction.message.edit(
             content="Analisis enviado a administrar evidencias para revision.",
-            embed=build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, MAPEO_MAX_WEEKLY_POINTS),
+            embed=build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, MAPEO_MAX_WEEKLY_UNITS),
             view=self,
         )
 
@@ -1182,7 +1185,7 @@ class MapeoReviewView(discord.ui.View):
         scanned: int,
         analysis_start: datetime,
         latest_event_at: datetime | None,
-        max_points: int = MAPEO_MAX_WEEKLY_POINTS,
+        max_units: int = MAPEO_MAX_WEEKLY_UNITS,
         road_weight: float = MAPEO_ROAD_WEIGHT,
         priority_weight: float = MAPEO_PRIORITY_WEIGHT,
         relock_weight: float = MAPEO_RELOCK_WEIGHT,
@@ -1192,7 +1195,7 @@ class MapeoReviewView(discord.ui.View):
         self.scanned = scanned
         self.analysis_start = analysis_start
         self.latest_event_at = latest_event_at
-        self.max_points = max_points
+        self.max_units = max_units
         self.road_weight = road_weight
         self.priority_weight = priority_weight
         self.relock_weight = relock_weight
@@ -1203,7 +1206,7 @@ class MapeoReviewView(discord.ui.View):
             self.analysis,
             self.scanned,
             self.analysis_start,
-            self.max_points,
+            self.max_units,
             self.road_weight,
             self.priority_weight,
             self.relock_weight,
@@ -1232,7 +1235,8 @@ class MapeoReviewView(discord.ui.View):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
 
-        awards, skipped = build_mapeo_point_awards(self.adjusted_analysis(), self.max_points)
+        max_points = self.max_units * (get_puntos("mapeo") or 1)
+        awards, skipped = build_mapeo_point_awards(self.adjusted_analysis(), max_points)
         if not awards:
             await interaction.response.send_message("No hay usuarios con ID para aplicar puntos.", ephemeral=True)
             return
@@ -1276,7 +1280,7 @@ class MapeoReviewView(discord.ui.View):
 
 
 class MapeoScoringModal(discord.ui.Modal):
-    max_points = discord.ui.TextInput(label="Tope del mejor aporte", placeholder="Ej: 30", max_length=3)
+    max_units = discord.ui.TextInput(label="Tope unidades del mejor aporte", placeholder="Ej: 10", max_length=3)
     road_weight = discord.ui.TextInput(label="Peso Road unica", placeholder="Ej: 1", max_length=5)
     priority_weight = discord.ui.TextInput(label="Peso Priority", placeholder="Ej: 0.15", max_length=5)
     relock_weight = discord.ui.TextInput(label="Peso RELOCK", placeholder="Ej: 0.15", max_length=5)
@@ -1284,24 +1288,24 @@ class MapeoScoringModal(discord.ui.Modal):
     def __init__(self, review_view: MapeoReviewView):
         super().__init__(title="Cambiar valores de mapeo")
         self.review_view = review_view
-        self.max_points.default = str(review_view.max_points)
+        self.max_units.default = str(review_view.max_units)
         self.road_weight.default = mapping_analysis.format_score(review_view.road_weight)
         self.priority_weight.default = mapping_analysis.format_score(review_view.priority_weight)
         self.relock_weight.default = mapping_analysis.format_score(review_view.relock_weight)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            max_points = int(str(self.max_points.value).strip())
+            max_units = int(str(self.max_units.value).strip())
             road_weight = float(str(self.road_weight.value).strip().replace(",", "."))
             priority_weight = float(str(self.priority_weight.value).strip().replace(",", "."))
             relock_weight = float(str(self.relock_weight.value).strip().replace(",", "."))
-            if max_points <= 0 or road_weight <= 0 or priority_weight < 0 or relock_weight < 0:
+            if max_units <= 0 or road_weight <= 0 or priority_weight < 0 or relock_weight < 0:
                 raise ValueError
         except ValueError:
             await interaction.response.send_message("Ingresa valores validos. Road/tope deben ser mayores a 0.", ephemeral=True)
             return
 
-        self.review_view.max_points = max_points
+        self.review_view.max_units = max_units
         self.review_view.road_weight = road_weight
         self.review_view.priority_weight = priority_weight
         self.review_view.relock_weight = relock_weight
