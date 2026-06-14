@@ -88,6 +88,36 @@ ACT_CHOICES = [
 ]
 admin_group = app_commands.Group(name="admin", description="Herramientas de administracion del ranking")
 
+async def send_interaction_error(interaction: discord.Interaction, message: str):
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        pass
+
+
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    original = getattr(error, "original", error)
+    traceback.print_exception(type(original), original, original.__traceback__)
+    await send_interaction_error(interaction, f"Ocurrio un error ejecutando el comando: `{original}`")
+
+
+tree.on_error = on_app_command_error
+
+
+class SafeView(discord.ui.View):
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await send_interaction_error(interaction, f"Ocurrio un error en el boton: `{error}`")
+
+
+class SafeModal(discord.ui.Modal):
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
+        await send_interaction_error(interaction, f"Ocurrio un error en el formulario: `{error}`")
+
 # ── Eventos ───────────────────────────────────────────────────────────────────
 
 @bot.event
@@ -842,7 +872,7 @@ def format_scouteo_count_table(records: list[dict], unit_points: int):
     return f"```text\n{chr(10).join(lines)}\n```"
 
 
-class ScouteoCountView(discord.ui.View):
+class ScouteoCountView(SafeView):
     def __init__(
         self,
         source_message: discord.Message,
@@ -916,7 +946,7 @@ class ScouteoCountView(discord.ui.View):
         )
 
 
-class ScouteoCountRuleModal(discord.ui.Modal):
+class ScouteoCountRuleModal(SafeModal):
     value = discord.ui.TextInput(label="Valor", placeholder="Ej: 5", max_length=3)
 
     def __init__(self, view: ScouteoCountView, target: str):
@@ -1136,7 +1166,7 @@ def apply_mapeo_score_settings(
     return adjusted
 
 
-class MapeoAnalysisView(discord.ui.View):
+class MapeoAnalysisView(SafeView):
     def __init__(self, analysis: dict, scanned: int, analysis_start: datetime, latest_event_at: datetime | None):
         super().__init__(timeout=1800)
         self.analysis = analysis
@@ -1180,7 +1210,7 @@ class MapeoAnalysisView(discord.ui.View):
         )
 
 
-class MapeoReviewView(discord.ui.View):
+class MapeoReviewView(SafeView):
     def __init__(
         self,
         analysis: dict,
@@ -1300,7 +1330,7 @@ class MapeoReviewView(discord.ui.View):
         )
 
 
-class MapeoMaxUnitsModal(discord.ui.Modal):
+class MapeoMaxUnitsModal(SafeModal):
     value = discord.ui.TextInput(label="Tope unidades del mejor aporte", placeholder="Ej: 30", max_length=3)
 
     def __init__(self, review_view: MapeoReviewView):
@@ -1327,7 +1357,7 @@ class MapeoMaxUnitsModal(discord.ui.Modal):
         await interaction.followup.send("Tope de unidades actualizado.", ephemeral=True)
 
 
-class MapeoActivityValueModal(discord.ui.Modal):
+class MapeoActivityValueModal(SafeModal):
     value = discord.ui.TextInput(label="Valor de cada unidad Mapeo", placeholder="Ej: 3", max_length=3)
 
     def __init__(self, review_view: MapeoReviewView):
@@ -1356,7 +1386,7 @@ class MapeoActivityValueModal(discord.ui.Modal):
         await interaction.followup.send("Valor de Mapeo actualizado.", ephemeral=True)
 
 
-class MapeoScoringModal(discord.ui.Modal):
+class MapeoScoringModal(SafeModal):
     road_weight = discord.ui.TextInput(label="Peso Road unica", placeholder="Ej: 1", max_length=5)
     priority_weight = discord.ui.TextInput(label="Peso Priority", placeholder="Ej: 0.15", max_length=5)
     relock_weight = discord.ui.TextInput(label="Peso RELOCK", placeholder="Ej: 0.15", max_length=5)
@@ -1451,7 +1481,7 @@ async def admin_perfil(interaction: discord.Interaction, usuario: discord.Member
     await interaction.response.send_message(embed=embed, view=AdminProfileView(usuario), ephemeral=True)
 
 
-class AdminProfileView(discord.ui.View):
+class AdminProfileView(SafeView):
     def __init__(self, usuario: discord.Member):
         super().__init__(timeout=300)
         self.user_id = str(usuario.id)
@@ -1490,7 +1520,7 @@ class AdminProfileView(discord.ui.View):
         )
 
 
-class AdminProfileActivityView(discord.ui.View):
+class AdminProfileActivityView(SafeView):
     def __init__(self, user_id: str, display_name: str, action: str):
         super().__init__(timeout=180)
         self.user_id = str(user_id)
@@ -1521,7 +1551,7 @@ class AdminProfileActivityButton(discord.ui.Button):
         )
 
 
-class AdminProfilePointsModal(discord.ui.Modal):
+class AdminProfilePointsModal(SafeModal):
     cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 24", max_length=6)
     tipo = discord.ui.TextInput(label="Tipo", placeholder="unidades o puntos", default="unidades", max_length=12)
     motivo = discord.ui.TextInput(
@@ -1770,7 +1800,7 @@ def build_bulk_points_dashboard_embed():
     return embed
 
 
-class BulkPointsDashboardView(discord.ui.View):
+class BulkPointsDashboardView(SafeView):
     def __init__(self):
         super().__init__(timeout=300)
         for key, meta in ACTIVIDADES.items():
@@ -1821,7 +1851,7 @@ def parse_activity_amount(actividad_key: str, amount_text: str, quantity_type_te
     return 0, 0, "Tipo invalido. Usa `unidades` o `puntos`."
 
 
-class BulkPointsModal(discord.ui.Modal):
+class BulkPointsModal(SafeModal):
     cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 24", max_length=6)
     tipo = discord.ui.TextInput(label="Tipo", placeholder="unidades o puntos", default="unidades", max_length=12)
     nombres = discord.ui.TextInput(
@@ -2300,7 +2330,7 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     return embed
 
 
-class PrioDashboardView(discord.ui.View):
+class PrioDashboardView(SafeView):
     def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
         super().__init__(timeout=600)
         self.minimo = max(0, int(minimo or DEFAULT_PRIORITY_MIN_POINTS))
@@ -2353,7 +2383,7 @@ class PrioDashboardView(discord.ui.View):
         await interaction.response.send_modal(PrioApplyConfirmModal(self.minimo))
 
 
-class PrioCutoffModal(discord.ui.Modal):
+class PrioCutoffModal(SafeModal):
     value = discord.ui.TextInput(label="Corte de puntos", placeholder="Ej: 50", max_length=4)
 
     def __init__(self, current_minimo: int):
@@ -2383,7 +2413,7 @@ class PrioCutoffModal(discord.ui.Modal):
         )
 
 
-class PrioApplyConfirmModal(discord.ui.Modal):
+class PrioApplyConfirmModal(SafeModal):
     confirmation = discord.ui.TextInput(label="Confirmacion", placeholder="Escribe APLICAR", max_length=10)
 
     def __init__(self, minimo: int):

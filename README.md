@@ -20,6 +20,16 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Verificacion segura
+
+Antes de desplegar cambios del bot:
+
+```bash
+python scripts/check_bot.py
+```
+
+Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre, modifica ni borra la base de datos.
+
 ## Comandos
 
 | Comando | Descripción | Permisos |
