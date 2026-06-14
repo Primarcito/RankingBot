@@ -20,6 +20,7 @@ from database import (
     get_evidence_participants as db_get_evidence_participants,
     get_evidence_review_message_id,
     get_all_scouts,
+    get_all_config,
     get_bot_state,
     get_puntos,
     get_nivel,
