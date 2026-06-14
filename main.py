@@ -1438,49 +1438,11 @@ async def mi_ranking(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@tree.command(name="caps_prioridad", description="Muestra los caps de prioridad del ranking")
-async def caps_prioridad(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=build_priority_caps_embed(), ephemeral=True)
-
-
-@tree.command(name="export_prio", description="Exporta quienes califican para el rol prio")
+@tree.command(name="prio", description="Panel semanal para revisar y aplicar el rol prio")
 @app_commands.describe(minimo="Puntos minimos para recibir prio. Ej: 50")
-async def export_prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
+async def prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
-
-    if minimo < 0:
-        await interaction.response.send_message("El minimo no puede ser negativo.", ephemeral=True)
-        return
-
-    if not interaction.guild:
-        await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
-        return
-
-    candidates = build_priority_candidates(minimo)
-    protected = get_priority_protected_members(interaction.guild)
-    embed = build_priority_decision_embed(minimo, candidates, protected)
-    file = build_priority_csv_file(minimo, interaction.guild)
-    await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
-
-
-@tree.command(name="aplicar_prio", description="Da el rol prio a quienes alcancen el corte")
-@app_commands.describe(
-    confirmacion="Escribe APLICAR para confirmar",
-    minimo="Puntos minimos para recibir prio. Ej: 50",
-)
-async def aplicar_prio(
-    interaction: discord.Interaction,
-    confirmacion: str,
-    minimo: int = DEFAULT_PRIORITY_MIN_POINTS,
-):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
-
-    if confirmacion != "APLICAR":
-        await interaction.response.send_message("Escribe `APLICAR` en confirmacion para asignar el rol prio.", ephemeral=True)
         return
 
     if minimo < 0:
@@ -1496,19 +1458,12 @@ async def aplicar_prio(
         await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
         return
 
-    bot_member = interaction.guild.me
-    if bot_member and role >= bot_member.top_role:
-        await interaction.response.send_message(
-            "No puedo administrar ese rol porque esta por encima o al mismo nivel que mi rol.",
-            ephemeral=True,
-        )
-        return
-
     await interaction.response.defer(ephemeral=True, thinking=True)
-    result = await sync_priority_role(interaction.guild, role, minimo)
-    embed = build_priority_apply_embed(minimo, role, result)
-    file = build_priority_csv_file(minimo, interaction.guild)
-    await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+    await interaction.followup.send(
+        embed=build_priority_dashboard_embed(interaction.guild, role, minimo),
+        view=PrioDashboardView(minimo),
+        ephemeral=True,
+    )
 
 
 @tree.command(name="info_ranking", description="Publica la guía y ranking general")
@@ -1701,8 +1656,67 @@ def build_priority_decision_embed(minimo: int, candidates: list[dict], protected
         value="GM y officer mantienen prio aunque no alcancen el corte.",
         inline=False,
     )
-    embed.set_footer(text="Usa /aplicar_prio confirmacion:APLICAR para sincronizar roles.")
+    embed.set_footer(text="Vuelve al panel /prio para aplicar o cambiar el corte.")
     return embed
+
+
+def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, minimo: int):
+    candidates = build_priority_candidates(minimo)
+    protected = get_priority_protected_members(guild)
+    rows = build_priority_export_rows(minimo, protected)
+    target_ids = {item["user_id"] for item in rows}
+    current_role_members = [member for member in role.members if not member.bot]
+    removable = [
+        member
+        for member in current_role_members
+        if str(member.id) not in target_ids and not member_has_any_role(member, PRIORITY_PROTECTED_ROLE_IDS)
+    ]
+    missing_candidates = [
+        item for item in candidates
+        if not guild.get_member(int(item["user_id"]))
+    ]
+
+    preview = [
+        f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['motivo']})"
+        for index, item in enumerate(rows[:12], start=1)
+    ]
+
+    embed = discord.Embed(
+        title="Panel semanal de prio",
+        description=(
+            f"Rol: {role.mention}\n"
+            f"Corte activo: **{minimo} puntos o mas**"
+        ),
+        color=COLOR_RANKING,
+    )
+    embed.add_field(name="Califican por ranking", value=str(len(candidates)), inline=True)
+    embed.add_field(name="GM/officer protegidos", value=str(len(protected)), inline=True)
+    embed.add_field(name="Prio final", value=str(len(rows)), inline=True)
+    embed.add_field(name="Tienen rol ahora", value=str(len(current_role_members)), inline=True)
+    embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
+    embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
+    embed.add_field(
+        name="Vista previa",
+        value="\n".join(preview) if preview else "Nadie alcanza el corte y no hay protegidos visibles.",
+        inline=False,
+    )
+    if missing_candidates:
+        embed.add_field(
+            name="Ojo",
+            value=f"{len(missing_candidates)} usuarios del ranking no estan en cache; al aplicar se intentara buscarlos.",
+            inline=False,
+        )
+    embed.set_footer(text="Exporta primero si quieres revisar la lista completa antes de aplicar.")
+    return embed
+
+
+def count_priority_additions(guild: discord.Guild, role: discord.Role, rows: list[dict]):
+    total = 0
+    for item in rows:
+        member = guild.get_member(int(item["user_id"])) if str(item["user_id"]).isdigit() else None
+        if member and role not in member.roles:
+            total += 1
+    return total
 
 
 def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None):
@@ -1855,6 +1869,133 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     if result["errors"]:
         embed.add_field(name="Errores", value="\n".join(result["errors"][:8])[:1000], inline=False)
     return embed
+
+
+class PrioDashboardView(discord.ui.View):
+    def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
+        super().__init__(timeout=600)
+        self.minimo = max(0, int(minimo or DEFAULT_PRIORITY_MIN_POINTS))
+
+    @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        role = get_priority_role(interaction)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            embed=build_priority_dashboard_embed(interaction.guild, role, self.minimo),
+            view=self,
+        )
+
+    @discord.ui.button(label="Cambiar corte", style=discord.ButtonStyle.primary)
+    async def change_cutoff(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(PrioCutoffModal(self.minimo))
+
+    @discord.ui.button(label="Exportar CSV", style=discord.ButtonStyle.secondary)
+    async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        candidates = build_priority_candidates(self.minimo)
+        protected = get_priority_protected_members(interaction.guild)
+        embed = build_priority_decision_embed(self.minimo, candidates, protected)
+        file = build_priority_csv_file(self.minimo, interaction.guild)
+        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+
+    @discord.ui.button(label="Ver caps", style=discord.ButtonStyle.secondary)
+    async def caps(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_priority_caps_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Aplicar roles", style=discord.ButtonStyle.danger)
+    async def apply_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(PrioApplyConfirmModal(self.minimo))
+
+
+class PrioCutoffModal(discord.ui.Modal):
+    value = discord.ui.TextInput(label="Corte de puntos", placeholder="Ej: 50", max_length=4)
+
+    def __init__(self, current_minimo: int):
+        super().__init__(title="Cambiar corte de prio")
+        self.value.default = str(current_minimo)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        try:
+            minimo = int(str(self.value.value).strip())
+            if minimo < 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("Ingresa un numero valido mayor o igual a 0.", ephemeral=True)
+            return
+
+        role = get_priority_role(interaction)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(
+            embed=build_priority_dashboard_embed(interaction.guild, role, minimo),
+            view=PrioDashboardView(minimo),
+        )
+
+
+class PrioApplyConfirmModal(discord.ui.Modal):
+    confirmation = discord.ui.TextInput(label="Confirmacion", placeholder="Escribe APLICAR", max_length=10)
+
+    def __init__(self, minimo: int):
+        super().__init__(title=f"Aplicar prio {minimo}+ pts")
+        self.minimo = minimo
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        if str(self.confirmation.value).strip() != "APLICAR":
+            await interaction.response.send_message("Operacion cancelada. Debes escribir `APLICAR`.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+
+        role = get_priority_role(interaction)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
+            return
+
+        bot_member = interaction.guild.me
+        if bot_member and role >= bot_member.top_role:
+            await interaction.response.send_message(
+                "No puedo administrar ese rol porque esta por encima o al mismo nivel que mi rol.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await sync_priority_role(interaction.guild, role, self.minimo)
+        embed = build_priority_apply_embed(self.minimo, role, result)
+        file = build_priority_csv_file(self.minimo, interaction.guild)
+        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+
+
+def get_priority_role(interaction: discord.Interaction):
+    if not interaction.guild:
+        return None
+    return interaction.guild.get_role(PRIORITY_ROLE_ID)
 
 
 @tree.command(name="reset_ranking", description="Resetea todos los puntos del ranking")
