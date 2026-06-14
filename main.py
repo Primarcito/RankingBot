@@ -1459,11 +1459,14 @@ async def prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
-    await interaction.followup.send(
-        embed=build_priority_dashboard_embed(interaction.guild, role, minimo),
-        view=PrioDashboardView(minimo),
-        ephemeral=True,
-    )
+    try:
+        embed = build_priority_dashboard_embed(interaction.guild, role, minimo)
+    except Exception as err:
+        traceback.print_exc()
+        await interaction.followup.send(f"No pude construir el panel de prio: `{err}`", ephemeral=True)
+        return
+
+    await interaction.followup.send(embed=embed, view=PrioDashboardView(minimo), ephemeral=True)
 
 
 @tree.command(name="info_ranking", description="Publica la guía y ranking general")
@@ -1673,11 +1676,15 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
     ]
     missing_candidates = [
         item for item in candidates
-        if not guild.get_member(int(item["user_id"]))
+        if is_discord_user_id(item["user_id"]) and not guild.get_member(int(item["user_id"]))
+    ]
+    invalid_candidates = [
+        item for item in candidates
+        if not is_discord_user_id(item["user_id"])
     ]
 
     preview = [
-        f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['motivo']})"
+        f"`#{index}` {format_priority_user(item)} - **{item['points']} pts** ({item['motivo']})"
         for index, item in enumerate(rows[:12], start=1)
     ]
 
@@ -1706,8 +1713,26 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
             value=f"{len(missing_candidates)} usuarios del ranking no estan en cache; al aplicar se intentara buscarlos.",
             inline=False,
         )
+    if invalid_candidates:
+        names = ", ".join(f"`{item['username']}`" for item in invalid_candidates[:8])
+        embed.add_field(
+            name="IDs no validos",
+            value=f"{len(invalid_candidates)} registros no tienen ID numerico de Discord: {names}",
+            inline=False,
+        )
     embed.set_footer(text="Exporta primero si quieres revisar la lista completa antes de aplicar.")
     return embed
+
+
+def is_discord_user_id(value):
+    return str(value or "").isdigit()
+
+
+def format_priority_user(item: dict):
+    user_id = str(item["user_id"])
+    if is_discord_user_id(user_id):
+        return f"<@{user_id}>"
+    return f"`{item['username']}` (`{user_id}`)"
 
 
 def count_priority_additions(guild: discord.Guild, role: discord.Role, rows: list[dict]):
