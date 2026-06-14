@@ -34,7 +34,7 @@ from database import (
     set_puntos,
     subtract_activity,
 )
-from config import ACTIVIDADES, APPLICATION_ID, COLOR_RANKING, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
+from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_RANKING, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     WEEKLY_EXPORT_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
@@ -1731,11 +1731,15 @@ async def puntos(interaction: discord.Interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
-    await interaction.response.send_message(
-        embed=build_bulk_points_dashboard_embed(),
-        view=BulkPointsDashboardView(),
-        ephemeral=True,
-    )
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        embed = build_bulk_points_dashboard_embed()
+    except Exception as err:
+        traceback.print_exc()
+        await interaction.followup.send(f"No pude construir el panel de puntos: `{err}`", ephemeral=True)
+        return
+
+    await interaction.followup.send(embed=embed, view=BulkPointsDashboardView(), ephemeral=True)
 
 
 def build_bulk_points_dashboard_embed():
