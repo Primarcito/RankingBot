@@ -7,7 +7,7 @@ import discord
 from database import find_scout_alias, get_all_scouts, get_scout_aliases
 
 
-PLUS_NAME_RE = re.compile(r"(?<!\S)\+([\w.-]{2,32})", re.UNICODE)
+PLUS_NAME_RE = re.compile(r"\+([\w.-]{2,32})", re.UNICODE)
 MENTION_RE = re.compile(r"<@!?(\d+)>")
 ID_RE = re.compile(r"\b\d{15,25}\b")
 

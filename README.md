@@ -24,16 +24,21 @@ python main.py
 
 | Comando | Descripción | Permisos |
 |---|---|---|
-| `/panel_scouts` | Panel con botones de actividad | Todos |
-| `/ranking_scouts` | Ranking top 15 | Todos |
-| `/perfil_scout` | Tu perfil | Todos |
-| `/perfil_scout_usuario @user` | Perfil de otro usuario | Todos |
-| `/prio minimo` | Panel semanal para exportar y sincronizar el rol prio | Admin |
-| `/set_puntos actividad cantidad` | Cambia el valor de una actividad | Admin |
-| `/sumar_scout @user actividad cantidad` | Suma manualmente | Admin |
-| `/restar_scout @user actividad cantidad` | Resta manualmente | Admin |
-| `/reset_scouts` | Resetea todos los conteos | Admin |
-| `/exportar_scouts` | Exporta CSV | Admin |
+| `/mi_ranking` | Tu perfil y puntos | Todos |
+| `/admin perfil usuario` | Perfil y puntos de cualquier scout | Admin |
+| `/admin conteo` | Calcula scouteo desde resumen diario | Admin |
+| `/admin analizar_mapeo` | Analiza logs de mapeo semanal | Admin |
+| `/admin reset_analisis` | Reinicia checkpoint semanal de mapeo | Admin |
+| `/admin dashboard_scouts` | Publica o actualiza dashboard de scouts | Admin |
+| `/admin info_ranking` | Publica la guia y ranking general | Admin |
+| `/admin prio minimo` | Panel semanal para exportar y sincronizar rol prio | Admin |
+| `/admin puntos` | Panel para sumar puntos en masa por actividad | Admin |
+| `/admin modificar_puntos` | Suma o resta actividades a un scout | Admin |
+| `/admin registrar_alt` | Asocia nombres alternos a un scout | Admin |
+| `/admin quitar_alt` | Quita un nombre alterno | Admin |
+| `/admin ver_alts` | Muestra alts asociados a un scout | Admin |
+| `/admin export_ranking` | Exporta el ranking como CSV | Admin |
+| `/admin reset_ranking` | Resetea todos los puntos del ranking | Admin |
 
 ## Niveles
 

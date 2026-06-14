@@ -85,6 +85,7 @@ ACT_CHOICES = [
     app_commands.Choice(name=meta["label"], value=key)
     for key, meta in ACTIVIDADES.items()
 ]
+admin_group = app_commands.Group(name="admin", description="Herramientas de administracion del ranking")
 
 # ── Eventos ───────────────────────────────────────────────────────────────────
 
@@ -746,7 +747,7 @@ async def get_review_channel(message: discord.Message):
     return message.channel
 
 
-@tree.command(name="conteo", description="Calcula scouteo desde un resumen diario por ID de mensaje")
+@admin_group.command(name="conteo", description="Calcula scouteo desde un resumen diario por ID de mensaje")
 @app_commands.describe(id_mensaje="ID del mensaje del resumen de Mapas en este canal")
 async def conteo(interaction: discord.Interaction, id_mensaje: str):
     if not can_review_member(interaction.user):
@@ -941,7 +942,7 @@ class ScouteoCountRuleModal(discord.ui.Modal):
         await self.view_ref.refresh(interaction)
 
 
-@tree.command(name="analizar_mapeo", description="Analiza logs de mapeo desde el inicio semanal del ranking")
+@admin_group.command(name="analizar_mapeo", description="Analiza logs de mapeo desde el inicio semanal del ranking")
 async def analizar_mapeo(interaction: discord.Interaction):
     if not can_review_member(interaction.user):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -1389,7 +1390,7 @@ class MapeoScoringModal(discord.ui.Modal):
         await interaction.followup.send("Pesos de mapeo actualizados.", ephemeral=True)
 
 
-@tree.command(name="reset_analisis_mapeo", description="Reinicia el checkpoint semanal del analisis de mapeo")
+@admin_group.command(name="reset_analisis", description="Reinicia el checkpoint semanal del analisis de mapeo")
 async def reset_analisis_mapeo(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -1403,7 +1404,7 @@ async def reset_analisis_mapeo(interaction: discord.Interaction):
     )
 
 
-@tree.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
+@admin_group.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
 async def dashboard_scouts(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -1438,7 +1439,197 @@ async def mi_ranking(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@tree.command(name="prio", description="Panel semanal para revisar y aplicar el rol prio")
+@admin_group.command(name="perfil", description="Muestra el perfil y puntos de cualquier scout")
+@app_commands.describe(usuario="Scout a revisar")
+async def admin_perfil(interaction: discord.Interaction, usuario: discord.Member):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    embed = build_perfil_embed(str(usuario.id), usuario.display_name)
+    await interaction.response.send_message(embed=embed, view=AdminProfileView(usuario), ephemeral=True)
+
+
+class AdminProfileView(discord.ui.View):
+    def __init__(self, usuario: discord.Member):
+        super().__init__(timeout=300)
+        self.user_id = str(usuario.id)
+        self.display_name = usuario.display_name
+
+    @discord.ui.button(label="Sumar", style=discord.ButtonStyle.success)
+    async def add_points(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_admin_profile_action_embed(self.user_id, self.display_name, "sumar"),
+            view=AdminProfileActivityView(self.user_id, self.display_name, "sumar"),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Restar", style=discord.ButtonStyle.danger)
+    async def subtract_points(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_admin_profile_action_embed(self.user_id, self.display_name, "restar"),
+            view=AdminProfileActivityView(self.user_id, self.display_name, "restar"),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
+    async def refresh_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            embed=build_perfil_embed(self.user_id, self.display_name),
+            view=self,
+        )
+
+
+class AdminProfileActivityView(discord.ui.View):
+    def __init__(self, user_id: str, display_name: str, action: str):
+        super().__init__(timeout=180)
+        self.user_id = str(user_id)
+        self.display_name = display_name
+        self.action = action
+        for key, meta in ACTIVIDADES.items():
+            self.add_item(AdminProfileActivityButton(self.user_id, self.display_name, self.action, key, meta))
+
+
+class AdminProfileActivityButton(discord.ui.Button):
+    def __init__(self, user_id: str, display_name: str, action: str, actividad_key: str, meta: dict):
+        super().__init__(
+            label=meta["label"],
+            emoji=meta["emoji"],
+            style=discord.ButtonStyle.success if action == "sumar" else discord.ButtonStyle.danger,
+        )
+        self.user_id = str(user_id)
+        self.display_name = display_name
+        self.action = action
+        self.actividad_key = actividad_key
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            AdminProfilePointsModal(self.user_id, self.display_name, self.action, self.actividad_key)
+        )
+
+
+class AdminProfilePointsModal(discord.ui.Modal):
+    cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 24", max_length=6)
+    tipo = discord.ui.TextInput(label="Tipo", placeholder="unidades o puntos", default="unidades", max_length=12)
+    motivo = discord.ui.TextInput(
+        label="Motivo",
+        placeholder="Ej: ajuste por pelea, correccion AFK",
+        required=False,
+        max_length=120,
+    )
+
+    def __init__(self, user_id: str, display_name: str, action: str, actividad_key: str):
+        self.user_id = str(user_id)
+        self.display_name = display_name
+        self.action = action
+        self.actividad_key = actividad_key
+        meta = ACTIVIDADES[actividad_key]
+        verb = "Sumar" if action == "sumar" else "Restar"
+        super().__init__(title=f"{verb} - {meta['label']}")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        units, requested_points, error = parse_activity_amount(
+            self.actividad_key,
+            str(self.cantidad.value),
+            str(self.tipo.value or "unidades"),
+        )
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
+        if self.action == "sumar":
+            changed_points = add_activity(self.user_id, self.display_name, self.actividad_key, units)
+            color = COLOR_SUCCESS
+            sign = "+"
+        else:
+            changed_points = subtract_activity(self.user_id, self.display_name, self.actividad_key, units)
+            color = COLOR_ERROR
+            sign = "-"
+
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
+        embed = build_admin_profile_adjustment_embed(
+            self.user_id,
+            self.display_name,
+            self.actividad_key,
+            self.action,
+            units,
+            requested_points,
+            changed_points,
+            sign,
+            color,
+            str(self.motivo.value or ""),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=AdminProfileView(SimpleProfileUser(self.user_id, self.display_name)),
+            ephemeral=True,
+        )
+
+
+class SimpleProfileUser:
+    def __init__(self, user_id: str, display_name: str):
+        self.id = int(user_id) if str(user_id).isdigit() else user_id
+        self.display_name = display_name
+
+
+def build_admin_profile_action_embed(user_id: str, display_name: str, action: str):
+    verb = "sumar" if action == "sumar" else "restar"
+    embed = discord.Embed(
+        title=f"Elegir actividad para {verb}",
+        description=f"Scout: <@{user_id}>\nElige la actividad que quieres {verb}.",
+        color=COLOR_SUCCESS if action == "sumar" else COLOR_ERROR,
+    )
+    return embed
+
+
+def build_admin_profile_adjustment_embed(
+    user_id: str,
+    display_name: str,
+    actividad_key: str,
+    action: str,
+    units: int,
+    requested_points: int,
+    changed_points: int,
+    sign: str,
+    color: int,
+    motivo: str,
+):
+    meta = ACTIVIDADES[actividad_key]
+    embed = discord.Embed(
+        title="Perfil ajustado",
+        description=(
+            f"Scout: <@{user_id}>\n"
+            f"{meta['emoji']} **{meta['label']}**\n"
+            f"Accion: **{action}**\n"
+            f"Cantidad: `{units}` unidades = `{requested_points}` pts solicitados\n"
+            f"Puntos aplicados: `{sign}{changed_points}`"
+        ),
+        color=color,
+    )
+    if motivo.strip():
+        embed.add_field(name="Motivo", value=motivo.strip()[:1000], inline=False)
+    embed.set_footer(text=f"Perfil de {display_name} actualizado.")
+    return embed
+
+
+@admin_group.command(name="prio", description="Panel semanal para revisar y aplicar el rol prio")
 @app_commands.describe(minimo="Puntos minimos para recibir prio. Ej: 50")
 async def prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
     if not is_admin(interaction):
@@ -1469,7 +1660,7 @@ async def prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_
     await interaction.followup.send(embed=embed, view=PrioDashboardView(minimo), ephemeral=True)
 
 
-@tree.command(name="info_ranking", description="Publica la guía y ranking general")
+@admin_group.command(name="info_ranking", description="Publica la guía y ranking general")
 async def info_ranking(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -1497,7 +1688,7 @@ async def publish_or_update_info_ranking():
         await channel.send(embed=embed, view=InfoRankingView())
 
 
-@tree.command(name="modificar_puntos", description="Suma o resta actividades a un scout")
+@admin_group.command(name="modificar_puntos", description="Suma o resta actividades a un scout")
 @app_commands.choices(actividad=ACT_CHOICES)
 async def modificar_puntos(
     interaction: discord.Interaction,
@@ -1534,7 +1725,215 @@ async def modificar_puntos(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@tree.command(name="registrar_alt", description="Asocia uno o varios nombres alternos a un scout")
+@admin_group.command(name="puntos", description="Panel para sumar puntos en masa")
+async def puntos(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        embed=build_bulk_points_dashboard_embed(),
+        view=BulkPointsDashboardView(),
+        ephemeral=True,
+    )
+
+
+def build_bulk_points_dashboard_embed():
+    points_config = {activity: points for activity, points in get_all_config()}
+    activity_lines = [
+        f"{meta['emoji']} **{meta['label']}** - `{points_config.get(key, 0)} pts/unidad`"
+        for key, meta in ACTIVIDADES.items()
+    ]
+    embed = discord.Embed(
+        title="Carga masiva de puntos",
+        description=(
+            "Elige una actividad y pega nombres con `+`, menciones o IDs.\n"
+            "Puedes ingresar la cantidad como `unidades` o como `puntos` finales."
+        ),
+        color=COLOR_PANEL,
+    )
+    embed.add_field(name="Actividades", value="\n".join(activity_lines), inline=False)
+    embed.add_field(
+        name="Ejemplo",
+        value=(
+            "`+ferthor +ryanshaft +viohlet +chinojvs`\n"
+            "Cantidad: `24` | Tipo: `puntos` | Actividad: `Kill Pelea`\n"
+            "Si Kill Pelea vale 3 pts, el bot suma 8 unidades a cada uno."
+        ),
+        inline=False,
+    )
+    return embed
+
+
+class BulkPointsDashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        for key, meta in ACTIVIDADES.items():
+            self.add_item(BulkPointsActivityButton(key, meta))
+
+
+class BulkPointsActivityButton(discord.ui.Button):
+    def __init__(self, actividad_key: str, meta: dict):
+        super().__init__(
+            label=meta["label"],
+            emoji=meta["emoji"],
+            style=discord.ButtonStyle.primary if actividad_key == "kill_pelea" else discord.ButtonStyle.secondary,
+        )
+        self.actividad_key = actividad_key
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(BulkPointsModal(self.actividad_key))
+
+
+def parse_activity_amount(actividad_key: str, amount_text: str, quantity_type_text: str):
+    try:
+        amount = int(str(amount_text).strip())
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        return 0, 0, "Ingresa una cantidad mayor a 0."
+
+    quantity_type = str(quantity_type_text or "unidades").strip().lower()
+    activity_points = get_puntos(actividad_key)
+    if quantity_type.startswith("p"):
+        if activity_points <= 0:
+            return 0, 0, "Esta actividad no tiene valor de puntos configurado."
+        if amount % activity_points != 0:
+            return (
+                0,
+                0,
+                f"`{amount}` puntos no se puede convertir exacto a unidades de {ACTIVIDADES[actividad_key]['label']} "
+                f"porque cada unidad vale `{activity_points}` pts.",
+            )
+        return amount // activity_points, amount, None
+
+    if quantity_type.startswith("u") or not quantity_type:
+        return amount, amount * activity_points, None
+
+    return 0, 0, "Tipo invalido. Usa `unidades` o `puntos`."
+
+
+class BulkPointsModal(discord.ui.Modal):
+    cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 24", max_length=6)
+    tipo = discord.ui.TextInput(label="Tipo", placeholder="unidades o puntos", default="unidades", max_length=12)
+    nombres = discord.ui.TextInput(
+        label="Nombres, menciones o IDs",
+        placeholder="+ferthor +ryanshaft +viohlet +monitougly +chinojvs +tikilon +shortout",
+        style=discord.TextStyle.paragraph,
+        max_length=1200,
+    )
+    motivo = discord.ui.TextInput(
+        label="Motivo",
+        placeholder="Ej: pelea del 14/06, 24 pts",
+        required=False,
+        max_length=120,
+    )
+
+    def __init__(self, actividad_key: str):
+        self.actividad_key = actividad_key
+        meta = ACTIVIDADES[actividad_key]
+        super().__init__(title=f"Carga masiva - {meta['label']}")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        units, requested_points, error = parse_activity_amount(
+            self.actividad_key,
+            str(self.cantidad.value),
+            str(self.tipo.value or "unidades"),
+        )
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        participants, unresolved, suggestions = await participant_tools.resolve_manual_names(
+            interaction.guild,
+            str(self.nombres.value),
+        )
+
+        if not participants:
+            embed = build_bulk_points_result_embed(
+                self.actividad_key,
+                units,
+                requested_points,
+                [],
+                unresolved,
+                suggestions,
+                str(self.motivo.value or ""),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        applied = []
+        for user_id, username in participants:
+            points = add_activity(str(user_id), username, self.actividad_key, units)
+            applied.append((user_id, username, points))
+
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
+        embed = build_bulk_points_result_embed(
+            self.actividad_key,
+            units,
+            requested_points,
+            applied,
+            unresolved,
+            suggestions,
+            str(self.motivo.value or ""),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+def build_bulk_points_result_embed(
+    actividad_key: str,
+    units: int,
+    requested_points: int,
+    applied: list[tuple[str, str, int]],
+    unresolved: list[str],
+    suggestions: list[dict],
+    motivo: str,
+):
+    meta = ACTIVIDADES[actividad_key]
+    color = COLOR_SUCCESS if applied else COLOR_WARNING
+    embed = discord.Embed(
+        title="Carga masiva aplicada" if applied else "Carga masiva sin aplicar",
+        description=(
+            f"{meta['emoji']} **{meta['label']}**\n"
+            f"Cantidad por persona: `{units}` unidades = `{requested_points}` pts"
+        ),
+        color=color,
+    )
+    if motivo.strip():
+        embed.add_field(name="Motivo", value=motivo.strip()[:1000], inline=False)
+    if applied:
+        total_points = sum(points for _, _, points in applied)
+        lines = [
+            f"<@{user_id}> - `+{points}` pts"
+            for user_id, _, points in applied[:25]
+        ]
+        embed.add_field(name=f"Aplicados ({len(applied)})", value="\n".join(lines), inline=False)
+        embed.add_field(name="Total agregado", value=f"`{total_points}` pts", inline=True)
+    if unresolved:
+        embed.add_field(
+            name="No encontrados",
+            value=", ".join(f"`+{name}`" for name in unresolved[:25])[:1000],
+            inline=False,
+        )
+    if suggestions:
+        embed.add_field(
+            name="Sugerencias no aplicadas",
+            value=participant_tools.format_participant_suggestions(suggestions)[:1000],
+            inline=False,
+        )
+    return embed
+
+
+@admin_group.command(name="registrar_alt", description="Asocia uno o varios nombres alternos a un scout")
 @app_commands.describe(usuario="Scout principal que recibira los puntos", nombres="Ej: +littleponny, +otroNombre")
 async def registrar_alt(interaction: discord.Interaction, usuario: discord.Member, nombres: str):
     if not is_admin(interaction):
@@ -1562,7 +1961,7 @@ async def registrar_alt(interaction: discord.Interaction, usuario: discord.Membe
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@tree.command(name="quitar_alt", description="Quita un nombre alterno del ranking")
+@admin_group.command(name="quitar_alt", description="Quita un nombre alterno del ranking")
 @app_commands.describe(nombre="Nombre alterno a quitar, con o sin +")
 async def quitar_alt(interaction: discord.Interaction, nombre: str):
     if not is_admin(interaction):
@@ -1574,7 +1973,7 @@ async def quitar_alt(interaction: discord.Interaction, nombre: str):
     await interaction.response.send_message(message, ephemeral=True)
 
 
-@tree.command(name="ver_alts", description="Muestra los nombres alternos asociados a un scout")
+@admin_group.command(name="ver_alts", description="Muestra los nombres alternos asociados a un scout")
 async def ver_alts(interaction: discord.Interaction, usuario: discord.Member):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -1589,7 +1988,7 @@ async def ver_alts(interaction: discord.Interaction, usuario: discord.Member):
     await interaction.response.send_message(f"Aliases de {usuario.mention}: {aliases}", ephemeral=True)
 
 
-@tree.command(name="export_ranking", description="Exporta el ranking como CSV")
+@admin_group.command(name="export_ranking", description="Exporta el ranking como CSV")
 async def export_ranking(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -2023,7 +2422,7 @@ def get_priority_role(interaction: discord.Interaction):
     return interaction.guild.get_role(PRIORITY_ROLE_ID)
 
 
-@tree.command(name="reset_ranking", description="Resetea todos los puntos del ranking")
+@admin_group.command(name="reset_ranking", description="Resetea todos los puntos del ranking")
 async def reset_ranking(interaction: discord.Interaction, confirmacion: str):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -2111,6 +2510,9 @@ def current_weekly_ranking_start():
     if target > now:
         target = target - timedelta(days=7)
     return target
+
+
+tree.add_command(admin_group)
 
 
 if __name__ == "__main__":
