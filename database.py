@@ -14,6 +14,13 @@ DEFAULT_ACTIVITY_POINTS = {
     "mapeo": 1,
 }
 CONFIG_REPAIR_MARKER = "__repair_points_config_2026_05_25"
+PRIORITY_LEVELS = (
+    {"level": "S", "min": 120, "max": None, "benefit": "Maxima prioridad"},
+    {"level": "A", "min": 80, "max": 119, "benefit": "Alta prioridad"},
+    {"level": "B", "min": 50, "max": 79, "benefit": "Prioridad media"},
+    {"level": "C", "min": 20, "max": 49, "benefit": "Prioridad basica"},
+    {"level": "Inactivo", "min": 0, "max": 19, "benefit": "Sin prioridad"},
+)
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
@@ -497,16 +504,12 @@ def calc_puntos_totales(row) -> int:
     return total
 
 def get_nivel(puntos: int) -> tuple[str, str]:
-    if puntos >= 120:
-        return "S", "Máxima prioridad"
-    elif puntos >= 80:
-        return "A", "Alta prioridad"
-    elif puntos >= 50:
-        return "B", "Prioridad media"
-    elif puntos >= 20:
-        return "C", "Prioridad básica"
-    else:
-        return "Inactivo", "Sin prioridad"
+    points = max(0, int(puntos or 0))
+    for priority in PRIORITY_LEVELS:
+        max_points = priority["max"]
+        if points >= priority["min"] and (max_points is None or points <= max_points):
+            return priority["level"], priority["benefit"]
+    return "Inactivo", "Sin prioridad"
 
 def normalize_name(name: str) -> str:
     text = unicodedata.normalize("NFKD", str(name or ""))

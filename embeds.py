@@ -1,6 +1,7 @@
 import discord
 from database import (
     COLS,
+    PRIORITY_LEVELS,
     calc_puntos_totales,
     get_all_config,
     get_all_scouts,
@@ -164,6 +165,34 @@ def build_info_ranking_embed() -> discord.Embed:
         inline=False,
     )
     embed.set_footer(text="Usa los botones de abajo - respuestas privadas")
+    return embed
+
+
+def build_priority_caps_embed() -> discord.Embed:
+    points_config = {activity: points for activity, points in get_all_config()}
+    embed = discord.Embed(
+        title="Caps de prioridad",
+        description="Rangos actuales del ranking semanal por puntos acumulados.",
+        color=COLOR_RANKING,
+    )
+
+    cap_lines = []
+    for priority in PRIORITY_LEVELS:
+        if priority["max"] is None:
+            range_text = f"{priority['min']}+ pts"
+        else:
+            range_text = f"{priority['min']}-{priority['max']} pts"
+        cap_lines.append(
+            f"{_nivel_badge(priority['level'])} **{priority['level']}** - `{range_text}` - {priority['benefit']}"
+        )
+    embed.add_field(name="Prioridades", value="\n".join(cap_lines), inline=False)
+
+    activity_lines = [
+        f"{meta['emoji']} **{meta['label']}**: `{points_config.get(key, 0)} pts`"
+        for key, meta in ACTIVIDADES.items()
+    ]
+    embed.add_field(name="Puntos por evidencia", value="\n".join(activity_lines), inline=False)
+    embed.set_footer(text="Estos caps se recalculan con la configuracion actual de puntos.")
     return embed
 
 

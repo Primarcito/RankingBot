@@ -28,6 +28,9 @@ python main.py
 | `/ranking_scouts` | Ranking top 15 | Todos |
 | `/perfil_scout` | Tu perfil | Todos |
 | `/perfil_scout_usuario @user` | Perfil de otro usuario | Todos |
+| `/caps_prioridad` | Muestra los caps de prioridad y puntos por evidencia | Todos |
+| `/export_prio minimo` | Exporta quienes tendran rol prio con ese corte | Admin |
+| `/aplicar_prio confirmacion minimo` | Sincroniza el rol prio semanal | Admin |
 | `/set_puntos actividad cantidad` | Cambia el valor de una actividad | Admin |
 | `/sumar_scout @user actividad cantidad` | Suma manualmente | Admin |
 | `/restar_scout @user actividad cantidad` | Resta manualmente | Admin |

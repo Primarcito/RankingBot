@@ -39,7 +39,8 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_SUCCESS, COLOR_ERROR, COLO
     WEEKLY_EXPORT_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
-    AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC
+    AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC, \
+    DEFAULT_PRIORITY_MIN_POINTS, PRIORITY_PROTECTED_ROLE_IDS, PRIORITY_ROLE_ID
 from views import (
     DashboardView,
     EvidenceAuthorConfirmView,
@@ -49,7 +50,7 @@ from views import (
     build_participant_resolution_embed,
     refresh_review_participants,
 )
-from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed
+from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed, build_priority_caps_embed
 from permissions import can_review_member, is_admin
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
@@ -1437,6 +1438,79 @@ async def mi_ranking(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+@tree.command(name="caps_prioridad", description="Muestra los caps de prioridad del ranking")
+async def caps_prioridad(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=build_priority_caps_embed(), ephemeral=True)
+
+
+@tree.command(name="export_prio", description="Exporta quienes califican para el rol prio")
+@app_commands.describe(minimo="Puntos minimos para recibir prio. Ej: 50")
+async def export_prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    if minimo < 0:
+        await interaction.response.send_message("El minimo no puede ser negativo.", ephemeral=True)
+        return
+
+    if not interaction.guild:
+        await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
+        return
+
+    candidates = build_priority_candidates(minimo)
+    protected = get_priority_protected_members(interaction.guild)
+    embed = build_priority_decision_embed(minimo, candidates, protected)
+    file = build_priority_csv_file(minimo, interaction.guild)
+    await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+
+
+@tree.command(name="aplicar_prio", description="Da el rol prio a quienes alcancen el corte")
+@app_commands.describe(
+    confirmacion="Escribe APLICAR para confirmar",
+    minimo="Puntos minimos para recibir prio. Ej: 50",
+)
+async def aplicar_prio(
+    interaction: discord.Interaction,
+    confirmacion: str,
+    minimo: int = DEFAULT_PRIORITY_MIN_POINTS,
+):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    if confirmacion != "APLICAR":
+        await interaction.response.send_message("Escribe `APLICAR` en confirmacion para asignar el rol prio.", ephemeral=True)
+        return
+
+    if minimo < 0:
+        await interaction.response.send_message("El minimo no puede ser negativo.", ephemeral=True)
+        return
+
+    if not interaction.guild:
+        await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
+        return
+
+    role = interaction.guild.get_role(PRIORITY_ROLE_ID)
+    if not role:
+        await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member and role >= bot_member.top_role:
+        await interaction.response.send_message(
+            "No puedo administrar ese rol porque esta por encima o al mismo nivel que mi rol.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    result = await sync_priority_role(interaction.guild, role, minimo)
+    embed = build_priority_apply_embed(minimo, role, result)
+    file = build_priority_csv_file(minimo, interaction.guild)
+    await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+
+
 @tree.command(name="info_ranking", description="Publica la guía y ranking general")
 async def info_ranking(interaction: discord.Interaction):
     if not is_admin(interaction):
@@ -1579,6 +1653,208 @@ def build_ranking_csv_file(filename: str):
 
     output.seek(0)
     return discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename=filename)
+
+
+def build_priority_candidates(minimo: int):
+    candidates = []
+    for row in get_all_scouts():
+        points = calc_puntos_totales(row)
+        if points < minimo:
+            continue
+        nivel, beneficio = get_nivel(points)
+        candidates.append({
+            "user_id": str(row[0]),
+            "username": row[1],
+            "points": points,
+            "nivel": nivel,
+            "beneficio": beneficio,
+        })
+    candidates.sort(key=lambda item: item["points"], reverse=True)
+    return candidates
+
+
+def build_priority_decision_embed(minimo: int, candidates: list[dict], protected_members: list[discord.Member] | None = None):
+    protected_members = protected_members or []
+    rows = build_priority_export_rows(minimo, protected_members)
+    preview = [
+        f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
+        for index, item in enumerate(rows[:15], start=1)
+    ]
+    embed = discord.Embed(
+        title="Decision semanal de prio",
+        description=(
+            f"Corte: **{minimo} puntos o mas**\n"
+            f"Califican por ranking: **{len(candidates)}**\n"
+            f"Protegidos GM/officer: **{len(protected_members)}**\n"
+            f"Total con prio final: **{len(rows)}**\n"
+            f"Rol prio: <@&{PRIORITY_ROLE_ID}>"
+        ),
+        color=COLOR_RANKING,
+    )
+    embed.add_field(
+        name="Vista previa",
+        value="\n".join(preview) if preview else "Nadie alcanza el corte.",
+        inline=False,
+    )
+    embed.add_field(
+        name="Protegidos",
+        value="GM y officer mantienen prio aunque no alcancen el corte.",
+        inline=False,
+    )
+    embed.set_footer(text="Usa /aplicar_prio confirmacion:APLICAR para sincronizar roles.")
+    return embed
+
+
+def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["user_id", "username", "total_puntos", "nivel", "beneficio", "motivo"])
+    protected_members = get_priority_protected_members(guild) if guild else []
+    for item in build_priority_export_rows(minimo, protected_members):
+        writer.writerow([
+            item["user_id"],
+            item["username"],
+            item["points"],
+            item["nivel"],
+            item["beneficio"],
+            item["motivo"],
+        ])
+    output.seek(0)
+    filename = f"prio_corte_{minimo}.csv"
+    return discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename=filename)
+
+
+def build_priority_export_rows(minimo: int, protected_members: list[discord.Member] | None = None):
+    rows = []
+    seen = set()
+    for item in build_priority_candidates(minimo):
+        row = dict(item)
+        row["motivo"] = "ranking"
+        rows.append(row)
+        seen.add(row["user_id"])
+
+    for member in protected_members or []:
+        user_id = str(member.id)
+        if user_id in seen:
+            continue
+        scout = next((row for row in get_all_scouts() if str(row[0]) == user_id), None)
+        points = calc_puntos_totales(scout) if scout else 0
+        nivel, beneficio = get_nivel(points)
+        rows.append({
+            "user_id": user_id,
+            "username": member.display_name,
+            "points": points,
+            "nivel": nivel,
+            "beneficio": beneficio,
+            "motivo": "protegido",
+        })
+        seen.add(user_id)
+
+    rows.sort(key=lambda item: (item["motivo"] != "ranking", -item["points"], item["username"].lower()))
+    return rows
+
+
+async def sync_priority_role(guild: discord.Guild, role: discord.Role, minimo: int):
+    candidates = build_priority_candidates(minimo)
+    eligible_ids = {item["user_id"] for item in candidates}
+    protected_ids = {str(member.id) for member in get_priority_protected_members(guild)}
+    target_ids = eligible_ids | protected_ids
+
+    result = {
+        "candidates": candidates,
+        "assigned": [],
+        "already": [],
+        "removed": [],
+        "kept_protected": [],
+        "missing": [],
+        "errors": [],
+    }
+
+    for user_id in sorted(target_ids):
+        member = await resolve_guild_member(guild, user_id)
+        if not member:
+            result["missing"].append(user_id)
+            continue
+        is_protected = str(user_id) in protected_ids
+        if role in member.roles:
+            bucket = "kept_protected" if is_protected and user_id not in eligible_ids else "already"
+            result[bucket].append(member)
+            continue
+        try:
+            await member.add_roles(role, reason=f"Ranking prio semanal: {minimo}+ puntos")
+            result["assigned"].append(member)
+        except discord.HTTPException as err:
+            result["errors"].append(f"No pude dar prio a {member.display_name}: {err}")
+
+    for member in list(role.members):
+        user_id = str(member.id)
+        if user_id in target_ids or member_has_any_role(member, PRIORITY_PROTECTED_ROLE_IDS):
+            continue
+        try:
+            await member.remove_roles(role, reason=f"Ranking prio semanal: debajo de {minimo} puntos")
+            result["removed"].append(member)
+        except discord.HTTPException as err:
+            result["errors"].append(f"No pude quitar prio a {member.display_name}: {err}")
+
+    return result
+
+
+async def resolve_guild_member(guild: discord.Guild, user_id: str):
+    member = guild.get_member(int(user_id)) if str(user_id).isdigit() else None
+    if member:
+        return member
+    try:
+        return await guild.fetch_member(int(user_id))
+    except (discord.HTTPException, ValueError):
+        return None
+
+
+def member_has_any_role(member: discord.Member, role_ids: set[str]):
+    member_role_ids = {str(role.id) for role in getattr(member, "roles", [])}
+    return bool(member_role_ids & {str(role_id) for role_id in role_ids})
+
+
+def get_priority_protected_members(guild: discord.Guild | None):
+    if not guild:
+        return []
+    members_by_id = {
+        str(member.id): member
+        for member in guild.members
+        if not member.bot and member_has_any_role(member, PRIORITY_PROTECTED_ROLE_IDS)
+    }
+    for role_id in PRIORITY_PROTECTED_ROLE_IDS:
+        role = guild.get_role(int(role_id))
+        if not role:
+            continue
+        for member in role.members:
+            if not member.bot:
+                members_by_id[str(member.id)] = member
+    return sorted(members_by_id.values(), key=lambda member: member.display_name.lower())
+
+
+def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
+    embed = discord.Embed(
+        title="Prio semanal sincronizada",
+        description=(
+            f"Corte aplicado: **{minimo} puntos o mas**\n"
+            f"Rol: {role.mention}\n"
+            f"Califican por ranking: **{len(result['candidates'])}**"
+        ),
+        color=COLOR_SUCCESS if not result["errors"] else COLOR_WARNING,
+    )
+    embed.add_field(name="Rol agregado", value=str(len(result["assigned"])), inline=True)
+    embed.add_field(name="Ya tenian prio", value=str(len(result["already"])), inline=True)
+    embed.add_field(name="Prio quitada", value=str(len(result["removed"])), inline=True)
+    embed.add_field(name="Protegidos mantenidos", value=str(len(result["kept_protected"])), inline=True)
+    if result["missing"]:
+        embed.add_field(
+            name="No encontrados",
+            value=", ".join(f"`{user_id}`" for user_id in result["missing"][:15]),
+            inline=False,
+        )
+    if result["errors"]:
+        embed.add_field(name="Errores", value="\n".join(result["errors"][:8])[:1000], inline=False)
+    return embed
 
 
 @tree.command(name="reset_ranking", description="Resetea todos los puntos del ranking")

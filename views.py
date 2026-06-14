@@ -279,6 +279,12 @@ class InfoRankingView(discord.ui.View):
             ephemeral=True,
         )
 
+    @discord.ui.button(label="Caps", style=discord.ButtonStyle.secondary, custom_id="info_ranking_caps", row=0)
+    async def caps(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from embeds import build_priority_caps_embed
+
+        await interaction.response.send_message(embed=build_priority_caps_embed(), ephemeral=True)
+
 
 class RankingPaginationView(discord.ui.View):
     def __init__(self, page: int = 0, per_page: int = 10):
