@@ -338,6 +338,21 @@ def get_evidence_participants_with_quantity(message_id: str):
         ).fetchall()
     return rows
 
+def get_ranking_snapshot(snapshot_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT s.id, s.created_at, s.period_start, s.period_end, s.reason,
+                   COUNT(r.user_id) AS total_rows
+            FROM ranking_snapshots s
+            LEFT JOIN ranking_snapshot_rows r ON r.snapshot_id = s.id
+            WHERE s.id=?
+            GROUP BY s.id
+            """,
+            (int(snapshot_id),),
+        ).fetchone()
+    return row
+
 def get_pending_evidence_message_ids():
     with get_conn() as conn:
         rows = conn.execute(
@@ -410,6 +425,129 @@ def approve_evidence(message_id: str):
         )
         conn.commit()
     return user_id, actividad, puntos, review_message_id, target_snapshot_id
+
+def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
+    snapshot = get_ranking_snapshot(snapshot_id)
+    if not snapshot:
+        return {"ok": False, "reason": "snapshot_not_found"}
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT user_id, actividad, puntos, status, review_message_id, target_snapshot_id
+            FROM evidence_messages
+            WHERE message_id=?
+            """,
+            (str(message_id),),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "reason": "evidence_not_found"}
+
+        user_id, actividad, stored_points, status, review_message_id, target_snapshot_id = row
+        if target_snapshot_id:
+            return {
+                "ok": False,
+                "reason": "already_snapshot",
+                "snapshot_id": int(target_snapshot_id),
+            }
+        if status == "rejected":
+            return {"ok": False, "reason": "rejected"}
+        if actividad not in ACTIVITY_COLUMNS:
+            return {"ok": False, "reason": "invalid_activity", "activity": actividad}
+
+        if status == "pending":
+            conn.execute(
+                "UPDATE evidence_messages SET target_snapshot_id=? WHERE message_id=?",
+                (int(snapshot_id), str(message_id)),
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "status": "pending_retargeted",
+                "snapshot_id": int(snapshot_id),
+                "activity": actividad,
+                "participants": [],
+                "units": 0,
+                "points": 0,
+            }
+
+        if status != "approved":
+            return {"ok": False, "reason": "invalid_status", "status": status}
+
+        points_unit = int(stored_points or get_puntos(actividad) or 0)
+        participants = conn.execute(
+            "SELECT user_id, username, cantidad FROM evidence_participants WHERE message_id=?",
+            (str(message_id),),
+        ).fetchall()
+        if not participants:
+            scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
+            participants = [(user_id, scout[0] if scout else user_id, 1)]
+
+        moved = []
+        total_units = 0
+        total_points = 0
+        for participant_id, username, cantidad in participants:
+            participant_id = str(participant_id)
+            cantidad = max(1, int(cantidad or 1))
+            current_row = conn.execute(
+                f"SELECT {actividad} FROM scouts WHERE user_id=?",
+                (participant_id,),
+            ).fetchone()
+            removed_units = min(cantidad, int(current_row[0] or 0)) if current_row else 0
+            if current_row:
+                conn.execute(
+                    f"UPDATE scouts SET {actividad}=MAX(0, {actividad} - ?) WHERE user_id=?",
+                    (cantidad, participant_id),
+                )
+            if removed_units:
+                conn.execute(
+                    "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        participant_id,
+                        username,
+                        actividad,
+                        removed_units,
+                        points_unit * removed_units,
+                        datetime.utcnow().isoformat(),
+                        f"mover_cierre_{snapshot_id}_resta_actual",
+                    ),
+                )
+
+            _apply_snapshot_activity(
+                conn,
+                int(snapshot_id),
+                participant_id,
+                username,
+                actividad,
+                cantidad,
+                points_unit,
+            )
+            moved.append({
+                "user_id": participant_id,
+                "username": username,
+                "units": cantidad,
+                "removed_units": removed_units,
+                "points": points_unit * cantidad,
+            })
+            total_units += cantidad
+            total_points += points_unit * cantidad
+
+        conn.execute(
+            "UPDATE evidence_messages SET target_snapshot_id=? WHERE message_id=?",
+            (int(snapshot_id), str(message_id)),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "status": "approved_moved",
+        "snapshot_id": int(snapshot_id),
+        "activity": actividad,
+        "participants": moved,
+        "units": total_units,
+        "points": total_points,
+        "review_message_id": review_message_id,
+    }
 
 def _apply_snapshot_activity(conn, snapshot_id: int, user_id: str, username: str, actividad: str, cantidad: int, puntos_unit: int):
     if actividad not in ACTIVITY_COLUMNS:

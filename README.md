@@ -36,7 +36,8 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 |---|---|---|
 | `/mi_ranking` | Tu perfil y puntos | Todos |
 | `/admin perfil usuario` | Perfil y puntos de cualquier scout | Admin |
-| `/admin conteo` | Calcula scouteo desde resumen diario y respeta cierres semanales | Admin |
+| `/admin conteo` | Calcula scouteo desde resumen diario y permite elegir ranking/cierre | Admin |
+| `/admin mover_conteo_cierre` | Mueve un conteo aprobado del ranking actual al cierre semanal | Admin |
 | `/admin analizar_mapeo` | Analiza logs de mapeo semanal | Admin |
 | `/admin reset_analisis` | Reinicia checkpoint semanal de mapeo | Admin |
 | `/admin dashboard_scouts` | Publica o actualiza dashboard de scouts | Admin |

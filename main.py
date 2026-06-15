@@ -29,9 +29,11 @@ from database import (
     get_nivel,
     get_pending_evidence_message_ids,
     get_scout_aliases,
+    get_ranking_snapshot,
     get_ranking_snapshot_for_time,
     get_ranking_snapshot_rows,
     init_db,
+    move_evidence_to_snapshot,
     remove_scout_alias,
     reset_all,
     set_bot_state,
@@ -470,7 +472,35 @@ def extract_scouteo_summary_date(message: discord.Message):
     except ValueError:
         return None
 
-def get_scouteo_count_target(message: discord.Message):
+def get_scouteo_count_target(message: discord.Message, source: str = "auto"):
+    source = str(source or "auto").strip().lower().replace("-", "_")
+    if source in {"actual", "ranking_actual"}:
+        return {
+            "snapshot_id": None,
+            "label": "Ranking actual",
+            "late": False,
+            "missing": False,
+            "summary_at": None,
+        }
+
+    if source in {"ultimo", "ultimo_cierre", "cierre"}:
+        snapshot = get_latest_ranking_snapshot()
+        if snapshot:
+            return {
+                "snapshot_id": int(snapshot[0]),
+                "label": f"Cierre semanal #{snapshot[0]} ({snapshot[3]})",
+                "late": True,
+                "missing": False,
+                "summary_at": None,
+            }
+        return {
+            "snapshot_id": None,
+            "label": "Ultimo cierre semanal no encontrado",
+            "late": True,
+            "missing": True,
+            "summary_at": None,
+        }
+
     summary_at = extract_scouteo_summary_date(message)
     if not summary_at:
         summary_at = message.created_at
@@ -874,8 +904,16 @@ async def get_review_channel(message: discord.Message):
 
 
 @admin_group.command(name="conteo", description="Calcula scouteo desde un resumen diario por ID de mensaje")
-@app_commands.describe(id_mensaje="ID del mensaje del resumen de Mapas en este canal")
-async def conteo(interaction: discord.Interaction, id_mensaje: str):
+@app_commands.describe(
+    id_mensaje="ID del mensaje del resumen de Mapas en este canal",
+    fuente="Auto detecta por fecha, o fuerza ranking/cierre",
+)
+@app_commands.choices(fuente=[
+    app_commands.Choice(name="Auto detectar", value="auto"),
+    app_commands.Choice(name="Ranking actual", value="actual"),
+    app_commands.Choice(name="Ultimo cierre semanal", value="ultimo_cierre"),
+])
+async def conteo(interaction: discord.Interaction, id_mensaje: str, fuente: str = "auto"):
     if not can_review_member(interaction.user):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
@@ -904,7 +942,7 @@ async def conteo(interaction: discord.Interaction, id_mensaje: str):
         await interaction.response.send_message("No pude leer nombres, horas y mapas en ese resumen.", ephemeral=True)
         return
 
-    target = get_scouteo_count_target(source_message)
+    target = get_scouteo_count_target(source_message, fuente)
     if target["missing"]:
         await interaction.response.send_message(
             "Ese resumen parece ser de una semana ya cerrada, pero no encontre un cierre semanal guardado para sumarlo.",
@@ -933,6 +971,113 @@ async def conteo(interaction: discord.Interaction, id_mensaje: str):
             target["late"],
         ),
     )
+
+
+@admin_group.command(name="mover_conteo_cierre", description="Mueve un conteo aprobado del ranking actual al cierre semanal")
+@app_commands.describe(
+    id_mensaje="ID del mensaje/resumen que ya fue contado",
+    cierre_id="Opcional: ID del cierre. Si lo dejas vacio usa el ultimo cierre.",
+)
+async def mover_conteo_cierre(
+    interaction: discord.Interaction,
+    id_mensaje: str,
+    cierre_id: int | None = None,
+):
+    if not is_admin(interaction):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    message_id = str(id_mensaje).strip()
+    if not message_id.isdigit():
+        await interaction.response.send_message("Ese ID de mensaje no es valido.", ephemeral=True)
+        return
+
+    snapshot = get_ranking_snapshot(cierre_id) if cierre_id else get_latest_ranking_snapshot()
+    if not snapshot:
+        await interaction.response.send_message("No encontre un cierre semanal guardado para mover ese conteo.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    result = move_evidence_to_snapshot(message_id, int(snapshot[0]))
+    if not result.get("ok"):
+        embed = build_move_count_error_embed(message_id, result)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    if result["status"] == "approved_moved":
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
+
+    embed = build_move_count_result_embed(message_id, snapshot, result)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+def build_move_count_error_embed(message_id: str, result: dict):
+    reason = result.get("reason")
+    messages = {
+        "snapshot_not_found": "No encontre ese cierre semanal.",
+        "evidence_not_found": "No encontre una evidencia/conteo con ese ID.",
+        "already_snapshot": f"Ese conteo ya esta asociado al cierre `#{result.get('snapshot_id')}`.",
+        "rejected": "Ese conteo fue rechazado, asi que no hay puntos que mover.",
+        "invalid_activity": f"Esa actividad no se puede mover automaticamente: `{result.get('activity')}`.",
+    }
+    embed = discord.Embed(
+        title="No pude mover el conteo",
+        description=messages.get(reason, f"Estado no soportado: `{reason or result.get('status')}`"),
+        color=COLOR_ERROR,
+    )
+    embed.add_field(name="ID mensaje", value=f"`{message_id}`", inline=False)
+    return embed
+
+
+def build_move_count_result_embed(message_id: str, snapshot, result: dict):
+    if result["status"] == "pending_retargeted":
+        embed = discord.Embed(
+            title="Conteo redirigido al cierre",
+            description=(
+                f"El conteo aun estaba pendiente, asi que ahora al aprobarse ira al cierre `#{snapshot[0]}`.\n"
+                f"ID mensaje: `{message_id}`"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        return embed
+
+    participants = result.get("participants", [])
+    lines = [
+        (
+            f"<@{item['user_id']}> - `{item['units']}` unidades "
+            f"(`{item['points']}` pts)"
+        )
+        for item in participants[:15]
+    ]
+    if len(participants) > 15:
+        lines.append(f"... y {len(participants) - 15} mas")
+
+    partial = [
+        item for item in participants
+        if item.get("removed_units", item["units"]) < item["units"]
+    ]
+    embed = discord.Embed(
+        title="Conteo movido al cierre semanal",
+        description=(
+            f"ID mensaje: `{message_id}`\n"
+            f"Destino: **Cierre semanal #{snapshot[0]} ({snapshot[3]})**\n"
+            f"Actividad: `{result['activity']}`\n"
+            f"Total movido: `{result['units']}` unidades = `{result['points']}` pts"
+        ),
+        color=COLOR_SUCCESS,
+    )
+    embed.add_field(name="Participantes", value="\n".join(lines) if lines else "Sin participantes.", inline=False)
+    if partial:
+        embed.add_field(
+            name="Ojo",
+            value=(
+                "A algunos usuarios se les resto menos del ranking actual porque ya no tenian todas esas unidades ahi. "
+                "El cierre recibio el conteo completo."
+            ),
+            inline=False,
+        )
+    return embed
 
 
 def build_scouteo_count_embed(
