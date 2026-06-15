@@ -1797,8 +1797,12 @@ def build_admin_profile_adjustment_embed(
 @admin_group.command(name="prio", description="Panel semanal para revisar y aplicar el rol prio")
 @app_commands.describe(
     minimo="Puntos minimos para recibir prio. Ej: 50",
-    fuente="actual o ultimo_cierre",
+    fuente="Ranking actual o ultimo cierre semanal",
 )
+@app_commands.choices(fuente=[
+    app_commands.Choice(name="Ranking actual", value="actual"),
+    app_commands.Choice(name="Ultimo cierre semanal", value="ultimo_cierre"),
+])
 async def prio(
     interaction: discord.Interaction,
     minimo: int = DEFAULT_PRIORITY_MIN_POINTS,
