@@ -4,6 +4,7 @@ import io
 import asyncio
 import traceback
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
@@ -15,6 +16,7 @@ from database import (
     add_evidence_participants,
     add_scout_alias,
     calc_puntos_totales,
+    create_ranking_snapshot,
     create_evidence_review,
     get_evidence_by_thread,
     get_evidence_participants as db_get_evidence_participants,
@@ -22,10 +24,13 @@ from database import (
     get_all_scouts,
     get_all_config,
     get_bot_state,
+    get_latest_ranking_snapshot,
     get_puntos,
     get_nivel,
     get_pending_evidence_message_ids,
     get_scout_aliases,
+    get_ranking_snapshot_for_time,
+    get_ranking_snapshot_rows,
     init_db,
     remove_scout_alias,
     reset_all,
@@ -397,6 +402,22 @@ async def get_evidence_participants(message: discord.Message):
 SUMMARY_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{2,40}")
 SUMMARY_TIME_RE = re.compile(r"(?:(\d{1,3})\s*h)?\s*(\d{1,2})\s*m\b", re.IGNORECASE)
 SUMMARY_MAPS_RE = re.compile(r"(\d{1,3})\s*(?:mapas?|maps?)\b", re.IGNORECASE)
+SUMMARY_DATE_RE = re.compile(r"\b(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{4})\b", re.IGNORECASE)
+SPANISH_MONTHS = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
 SCOUTEO_HOURS_PER_POINT = 5
 SCOUTEO_MAPS_PER_POINT = 3
 SCOUTEO_HOURS_SETTING_KEY = "scouteo_count_hours_per_point"
@@ -427,13 +448,70 @@ def get_embed_search_text(message: discord.Message):
             parts.append(field.value or "")
     return "\n".join(part for part in parts if part)
 
+def normalize_search_text(text: str):
+    normalized = unicodedata.normalize("NFD", text or "")
+    return "".join(char for char in normalized if unicodedata.category(char) != "Mn").lower()
+
+def extract_scouteo_summary_date(message: discord.Message):
+    text = normalize_search_text(get_embed_search_text(message))
+    match = SUMMARY_DATE_RE.search(text)
+    if not match:
+        return None
+
+    day = int(match.group(1))
+    month = SPANISH_MONTHS.get(match.group(2).lower())
+    year = int(match.group(3))
+    if not month:
+        return None
+
+    try:
+        return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+def get_scouteo_count_target(message: discord.Message):
+    summary_at = extract_scouteo_summary_date(message)
+    if not summary_at:
+        summary_at = message.created_at
+        if summary_at.tzinfo is None:
+            summary_at = summary_at.replace(tzinfo=timezone.utc)
+        else:
+            summary_at = summary_at.astimezone(timezone.utc)
+
+    if summary_at >= current_weekly_ranking_start():
+        return {
+            "snapshot_id": None,
+            "label": "Ranking actual",
+            "late": False,
+            "missing": False,
+            "summary_at": summary_at,
+        }
+
+    snapshot = get_ranking_snapshot_for_time(summary_at)
+    if snapshot:
+        return {
+            "snapshot_id": int(snapshot[0]),
+            "label": f"Cierre semanal #{snapshot[0]} ({snapshot[3]})",
+            "late": True,
+            "missing": False,
+            "summary_at": summary_at,
+        }
+
+    return {
+        "snapshot_id": None,
+        "label": "Semana cerrada sin archivo guardado",
+        "late": True,
+        "missing": True,
+        "summary_at": summary_at,
+    }
+
 def extract_scouteo_summary_records(message: discord.Message):
     text = get_embed_search_text(message)
     if not text:
         return []
 
-    normalized = text.lower()
-    if "resumen del dia" not in normalized and "resumen del día" not in normalized:
+    normalized = normalize_search_text(text)
+    if "resumen del dia" not in normalized:
         return []
     if "scout" not in normalized or "mapas" not in normalized:
         return []
@@ -497,15 +575,29 @@ async def handle_scouteo_summary_message(message: discord.Message):
     if not records:
         return False
 
+    target = get_scouteo_count_target(message)
+    if target["missing"]:
+        print("[SCOUTEO SUMMARY] ignorado: resumen anterior al reset sin cierre guardado")
+        return False
+
     hours_per_point, maps_per_point = get_scouteo_count_settings()
     records = calculate_scouteo_records(records, hours_per_point, maps_per_point)
-    return await create_scouteo_count_review(message, records, hours_per_point, maps_per_point)
+    return await create_scouteo_count_review(
+        message,
+        records,
+        hours_per_point,
+        maps_per_point,
+        target["snapshot_id"],
+        target["label"],
+    )
 
 async def create_scouteo_count_review(
     message: discord.Message,
     records: list[dict],
     hours_per_point: int,
     maps_per_point: int,
+    target_snapshot_id: int | None = None,
+    target_label: str = "Ranking actual",
 ):
     participant_rows = []
     unresolved_names = []
@@ -537,7 +629,8 @@ async def create_scouteo_count_review(
         owner_id,
         owner_name,
         "scouteo",
-        participant_rows
+        participant_rows,
+        target_snapshot_id=target_snapshot_id,
     )
     if pts <= 0:
         print("[SCOUTEO SUMMARY] duplicado")
@@ -551,6 +644,7 @@ async def create_scouteo_count_review(
             f"Usuario: {message.author.mention}\n"
             f"Actividad: **{ACTIVIDADES['scouteo']['label']}**\n"
             f"Origen: **Resumen del Dia**\n"
+            f"Destino: **{target_label}**\n"
             f"Reglas: `{hours_per_point}h = 1 punto | {maps_per_point} mapas = 1 punto`\n"
             f"Total calculado: `{sum(row[2] for row in participant_rows) * pts}` pts\n"
             f"Canal: {message.channel.mention}\n"
@@ -809,16 +903,34 @@ async def conteo(interaction: discord.Interaction, id_mensaje: str):
         await interaction.response.send_message("No pude leer nombres, horas y mapas en ese resumen.", ephemeral=True)
         return
 
+    target = get_scouteo_count_target(source_message)
+    if target["missing"]:
+        await interaction.response.send_message(
+            "Ese resumen parece ser de una semana ya cerrada, pero no encontre un cierre semanal guardado para sumarlo.",
+            ephemeral=True,
+        )
+        return
+
     hours_per_point, maps_per_point = get_scouteo_count_settings()
     embed = build_scouteo_count_embed(
         source_message,
         calculate_scouteo_records(records, hours_per_point, maps_per_point),
         hours_per_point,
         maps_per_point,
+        target["label"],
+        target["late"],
     )
     await interaction.response.send_message(
         embed=embed,
-        view=ScouteoCountView(source_message, records, hours_per_point, maps_per_point),
+        view=ScouteoCountView(
+            source_message,
+            records,
+            hours_per_point,
+            maps_per_point,
+            target["snapshot_id"],
+            target["label"],
+            target["late"],
+        ),
     )
 
 
@@ -827,6 +939,8 @@ def build_scouteo_count_embed(
     records: list[dict],
     hours_per_point: int,
     maps_per_point: int,
+    target_label: str = "Ranking actual",
+    is_late_closure: bool = False,
 ):
     unit_points = get_puntos("scouteo")
     total_units = sum(record["total"] for record in records)
@@ -834,6 +948,7 @@ def build_scouteo_count_embed(
         title="Conteo de scouteo",
         description=(
             f"Mensaje: [abrir resumen]({source_message.jump_url})\n"
+            f"Destino: **{target_label}**\n"
             f"Reglas: `{hours_per_point}h = 1 punto | {maps_per_point} mapas = 1 punto`\n"
             f"Valor Scouteo: `{unit_points}` pts por unidad\n"
             f"Total: `{total_units * unit_points}` pts"
@@ -845,6 +960,12 @@ def build_scouteo_count_embed(
         value=format_scouteo_count_table(records, unit_points),
         inline=False,
     )
+    if is_late_closure:
+        embed.add_field(
+            name="Criterio semanal",
+            value="La fecha del resumen pertenece a la semana cerrada; al aprobarlo no suma al ranking nuevo.",
+            inline=False,
+        )
     return embed
 
 
@@ -879,12 +1000,18 @@ class ScouteoCountView(SafeView):
         records: list[dict],
         hours_per_point: int,
         maps_per_point: int,
+        target_snapshot_id: int | None = None,
+        target_label: str = "Ranking actual",
+        is_late_closure: bool = False,
     ):
         super().__init__(timeout=300)
         self.source_message = source_message
         self.records = records
         self.hours_per_point = hours_per_point
         self.maps_per_point = maps_per_point
+        self.target_snapshot_id = target_snapshot_id
+        self.target_label = target_label
+        self.is_late_closure = is_late_closure
 
     def calculated_records(self):
         return calculate_scouteo_records(self.records, self.hours_per_point, self.maps_per_point)
@@ -895,6 +1022,8 @@ class ScouteoCountView(SafeView):
             self.calculated_records(),
             self.hours_per_point,
             self.maps_per_point,
+            self.target_label,
+            self.is_late_closure,
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -923,6 +1052,8 @@ class ScouteoCountView(SafeView):
             self.calculated_records(),
             self.hours_per_point,
             self.maps_per_point,
+            self.target_snapshot_id,
+            self.target_label,
         )
         if not created:
             await interaction.response.send_message("No se pudo crear la revision. Puede que ya exista o no haya puntos.", ephemeral=True)
@@ -941,6 +1072,8 @@ class ScouteoCountView(SafeView):
                 self.calculated_records(),
                 self.hours_per_point,
                 self.maps_per_point,
+                self.target_label,
+                self.is_late_closure,
             ),
             view=self,
         )
@@ -1661,8 +1794,15 @@ def build_admin_profile_adjustment_embed(
 
 
 @admin_group.command(name="prio", description="Panel semanal para revisar y aplicar el rol prio")
-@app_commands.describe(minimo="Puntos minimos para recibir prio. Ej: 50")
-async def prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
+@app_commands.describe(
+    minimo="Puntos minimos para recibir prio. Ej: 50",
+    fuente="actual o ultimo_cierre",
+)
+async def prio(
+    interaction: discord.Interaction,
+    minimo: int = DEFAULT_PRIORITY_MIN_POINTS,
+    fuente: str = "actual",
+):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
@@ -1682,13 +1822,14 @@ async def prio(interaction: discord.Interaction, minimo: int = DEFAULT_PRIORITY_
 
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        embed = build_priority_dashboard_embed(interaction.guild, role, minimo)
+        source = normalize_priority_source(fuente)
+        embed = build_priority_dashboard_embed(interaction.guild, role, minimo, source)
     except Exception as err:
         traceback.print_exc()
         await interaction.followup.send(f"No pude construir el panel de prio: `{err}`", ephemeral=True)
         return
 
-    await interaction.followup.send(embed=embed, view=PrioDashboardView(minimo), ephemeral=True)
+    await interaction.followup.send(embed=embed, view=PrioDashboardView(minimo, source), ephemeral=True)
 
 
 @admin_group.command(name="info_ranking", description="Publica la guía y ranking general")
@@ -2047,13 +2188,54 @@ def build_ranking_csv_file(filename: str):
     return discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename=filename)
 
 
-def build_priority_candidates(minimo: int):
+def normalize_priority_source(source: str | None):
+    text = str(source or "actual").strip().lower().replace("-", "_")
+    if text in {"ultimo", "ultimo_cierre", "cierre", "archivo", "snapshot"}:
+        return "ultimo_cierre"
+    return "actual"
+
+
+def get_priority_source(source: str | None = "actual"):
+    source = normalize_priority_source(source)
+    if source == "ultimo_cierre":
+        snapshot = get_latest_ranking_snapshot()
+        if not snapshot:
+            return {
+                "source": source,
+                "label": "Ultimo cierre semanal (sin cierres guardados)",
+                "snapshot": None,
+                "rows": [],
+            }
+        rows = get_ranking_snapshot_rows(snapshot[0])
+        return {
+            "source": source,
+            "label": f"Ultimo cierre semanal #{snapshot[0]} ({snapshot[3]})",
+            "snapshot": snapshot,
+            "rows": rows,
+        }
+
+    return {
+        "source": "actual",
+        "label": "Ranking actual",
+        "snapshot": None,
+        "rows": get_all_scouts(),
+    }
+
+
+def row_points_level(row):
+    if len(row) >= 10:
+        return int(row[7] or 0), row[8], row[9]
+    points = calc_puntos_totales(row)
+    nivel, beneficio = get_nivel(points)
+    return points, nivel, beneficio
+
+
+def build_priority_candidates(minimo: int, ranking_rows=None):
     candidates = []
-    for row in get_all_scouts():
-        points = calc_puntos_totales(row)
+    for row in (ranking_rows if ranking_rows is not None else get_all_scouts()):
+        points, nivel, beneficio = row_points_level(row)
         if points < minimo:
             continue
-        nivel, beneficio = get_nivel(points)
         candidates.append({
             "user_id": str(row[0]),
             "username": row[1],
@@ -2065,19 +2247,26 @@ def build_priority_candidates(minimo: int):
     return candidates
 
 
-def build_priority_decision_embed(minimo: int, candidates: list[dict], protected_members: list[discord.Member] | None = None):
+def build_priority_decision_embed(
+    minimo: int,
+    candidates: list[dict],
+    protected_members: list[discord.Member] | None = None,
+    source_label: str = "Ranking actual",
+    ranking_rows=None,
+):
     protected_members = protected_members or []
-    rows = build_priority_export_rows(minimo, protected_members)
+    rows = build_priority_export_rows(minimo, protected_members, ranking_rows)
     preview = [
-        f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
+        f"`#{index}` {format_priority_user(item)} - **{item['points']} pts** ({item['nivel']})"
         for index, item in enumerate(rows[:15], start=1)
     ]
     embed = discord.Embed(
         title="Decision semanal de prio",
         description=(
             f"Corte: **{minimo} puntos o mas**\n"
+            f"Fuente: **{source_label}**\n"
             f"Califican por ranking: **{len(candidates)}**\n"
-            f"Protegidos GM/officer: **{len(protected_members)}**\n"
+            f"Staff/GM protegidos: **{len(protected_members)}**\n"
             f"Total con prio final: **{len(rows)}**\n"
             f"Rol prio: <@&{PRIORITY_ROLE_ID}>"
         ),
@@ -2089,18 +2278,20 @@ def build_priority_decision_embed(minimo: int, candidates: list[dict], protected
         inline=False,
     )
     embed.add_field(
-        name="Protegidos",
-        value="GM y officer mantienen prio aunque no alcancen el corte.",
+        name="Staff/GM",
+        value="Staff y GM mantienen prio aunque no alcancen el corte.",
         inline=False,
     )
     embed.set_footer(text="Vuelve al panel /prio para aplicar o cambiar el corte.")
     return embed
 
 
-def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, minimo: int):
-    candidates = build_priority_candidates(minimo)
+def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, minimo: int, source: str = "actual"):
+    source_data = get_priority_source(source)
+    ranking_rows = source_data["rows"]
+    candidates = build_priority_candidates(minimo, ranking_rows)
     protected = get_priority_protected_members(guild)
-    rows = build_priority_export_rows(minimo, protected)
+    rows = build_priority_export_rows(minimo, protected, ranking_rows)
     target_ids = {item["user_id"] for item in rows}
     current_role_members = [member for member in role.members if not member.bot]
     removable = [
@@ -2126,19 +2317,20 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
         title="Panel semanal de prio",
         description=(
             f"Rol: {role.mention}\n"
-            f"Corte activo: **{minimo} puntos o mas**"
+            f"Corte activo: **{minimo} puntos o mas**\n"
+            f"Fuente: **{source_data['label']}**"
         ),
         color=COLOR_RANKING,
     )
     embed.add_field(name="Califican por ranking", value=str(len(candidates)), inline=True)
-    embed.add_field(name="GM/officer protegidos", value=str(len(protected)), inline=True)
+    embed.add_field(name="Staff/GM protegidos", value=str(len(protected)), inline=True)
     embed.add_field(name="Prio final", value=str(len(rows)), inline=True)
     embed.add_field(name="Tienen rol ahora", value=str(len(current_role_members)), inline=True)
     embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
     embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
     embed.add_field(
         name="Vista previa",
-        value="\n".join(preview) if preview else "Nadie alcanza el corte y no hay protegidos visibles.",
+        value="\n".join(preview) if preview else "Nadie alcanza el corte y no hay Staff/GM visibles.",
         inline=False,
     )
     if missing_candidates:
@@ -2152,6 +2344,12 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
         embed.add_field(
             name="IDs no validos",
             value=f"{len(invalid_candidates)} registros no tienen ID numerico de Discord: {names}",
+            inline=False,
+        )
+    if source_data["source"] == "ultimo_cierre" and not source_data["snapshot"]:
+        embed.add_field(
+            name="Sin cierre guardado",
+            value="Aun no hay cierres semanales archivados en la base.",
             inline=False,
         )
     embed.set_footer(text="Exporta primero si quieres revisar la lista completa antes de aplicar.")
@@ -2178,12 +2376,14 @@ def count_priority_additions(guild: discord.Guild, role: discord.Role, rows: lis
     return total
 
 
-def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None):
+def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None, source: str = "actual"):
+    source_data = get_priority_source(source)
     output = io.StringIO()
     writer = csv.writer(output)
+    writer.writerow(["fuente", source_data["label"]])
     writer.writerow(["user_id", "username", "total_puntos", "nivel", "beneficio", "motivo"])
     protected_members = get_priority_protected_members(guild) if guild else []
-    for item in build_priority_export_rows(minimo, protected_members):
+    for item in build_priority_export_rows(minimo, protected_members, source_data["rows"]):
         writer.writerow([
             item["user_id"],
             item["username"],
@@ -2193,14 +2393,15 @@ def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None):
             item["motivo"],
         ])
     output.seek(0)
-    filename = f"prio_corte_{minimo}.csv"
+    filename = f"prio_{source_data['source']}_corte_{minimo}.csv"
     return discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename=filename)
 
 
-def build_priority_export_rows(minimo: int, protected_members: list[discord.Member] | None = None):
+def build_priority_export_rows(minimo: int, protected_members: list[discord.Member] | None = None, ranking_rows=None):
     rows = []
     seen = set()
-    for item in build_priority_candidates(minimo):
+    ranking_rows = ranking_rows if ranking_rows is not None else get_all_scouts()
+    for item in build_priority_candidates(minimo, ranking_rows):
         row = dict(item)
         row["motivo"] = "ranking"
         rows.append(row)
@@ -2210,16 +2411,19 @@ def build_priority_export_rows(minimo: int, protected_members: list[discord.Memb
         user_id = str(member.id)
         if user_id in seen:
             continue
-        scout = next((row for row in get_all_scouts() if str(row[0]) == user_id), None)
-        points = calc_puntos_totales(scout) if scout else 0
-        nivel, beneficio = get_nivel(points)
+        scout = next((row for row in ranking_rows if str(row[0]) == user_id), None)
+        if scout:
+            points, nivel, beneficio = row_points_level(scout)
+        else:
+            points = 0
+            nivel, beneficio = get_nivel(0)
         rows.append({
             "user_id": user_id,
             "username": member.display_name,
             "points": points,
             "nivel": nivel,
             "beneficio": beneficio,
-            "motivo": "protegido",
+            "motivo": "staff_gm",
         })
         seen.add(user_id)
 
@@ -2227,13 +2431,15 @@ def build_priority_export_rows(minimo: int, protected_members: list[discord.Memb
     return rows
 
 
-async def sync_priority_role(guild: discord.Guild, role: discord.Role, minimo: int):
-    candidates = build_priority_candidates(minimo)
+async def sync_priority_role(guild: discord.Guild, role: discord.Role, minimo: int, source: str = "actual"):
+    source_data = get_priority_source(source)
+    candidates = build_priority_candidates(minimo, source_data["rows"])
     eligible_ids = {item["user_id"] for item in candidates}
     protected_ids = {str(member.id) for member in get_priority_protected_members(guild)}
     target_ids = eligible_ids | protected_ids
 
     result = {
+        "source_label": source_data["label"],
         "candidates": candidates,
         "assigned": [],
         "already": [],
@@ -2254,7 +2460,7 @@ async def sync_priority_role(guild: discord.Guild, role: discord.Role, minimo: i
             result[bucket].append(member)
             continue
         try:
-            await member.add_roles(role, reason=f"Ranking prio semanal: {minimo}+ puntos")
+            await member.add_roles(role, reason=f"Ranking prio semanal ({source_data['source']}): {minimo}+ puntos")
             result["assigned"].append(member)
         except discord.HTTPException as err:
             result["errors"].append(f"No pude dar prio a {member.display_name}: {err}")
@@ -2264,7 +2470,7 @@ async def sync_priority_role(guild: discord.Guild, role: discord.Role, minimo: i
         if user_id in target_ids or member_has_any_role(member, PRIORITY_PROTECTED_ROLE_IDS):
             continue
         try:
-            await member.remove_roles(role, reason=f"Ranking prio semanal: debajo de {minimo} puntos")
+            await member.remove_roles(role, reason=f"Ranking prio semanal ({source_data['source']}): debajo de {minimo} puntos")
             result["removed"].append(member)
         except discord.HTTPException as err:
             result["errors"].append(f"No pude quitar prio a {member.display_name}: {err}")
@@ -2310,6 +2516,7 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
         title="Prio semanal sincronizada",
         description=(
             f"Corte aplicado: **{minimo} puntos o mas**\n"
+            f"Fuente: **{result.get('source_label', 'Ranking actual')}**\n"
             f"Rol: {role.mention}\n"
             f"Califican por ranking: **{len(result['candidates'])}**"
         ),
@@ -2318,7 +2525,7 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     embed.add_field(name="Rol agregado", value=str(len(result["assigned"])), inline=True)
     embed.add_field(name="Ya tenian prio", value=str(len(result["already"])), inline=True)
     embed.add_field(name="Prio quitada", value=str(len(result["removed"])), inline=True)
-    embed.add_field(name="Protegidos mantenidos", value=str(len(result["kept_protected"])), inline=True)
+    embed.add_field(name="Staff/GM protegidos", value=str(len(result["kept_protected"])), inline=True)
     if result["missing"]:
         embed.add_field(
             name="No encontrados",
@@ -2331,9 +2538,10 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
 
 
 class PrioDashboardView(SafeView):
-    def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS):
+    def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS, source: str = "actual"):
         super().__init__(timeout=600)
         self.minimo = max(0, int(minimo or DEFAULT_PRIORITY_MIN_POINTS))
+        self.source = normalize_priority_source(source)
 
     @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2345,7 +2553,7 @@ class PrioDashboardView(SafeView):
             await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
             return
         await interaction.response.edit_message(
-            embed=build_priority_dashboard_embed(interaction.guild, role, self.minimo),
+            embed=build_priority_dashboard_embed(interaction.guild, role, self.minimo, self.source),
             view=self,
         )
 
@@ -2354,7 +2562,7 @@ class PrioDashboardView(SafeView):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
-        await interaction.response.send_modal(PrioCutoffModal(self.minimo))
+        await interaction.response.send_modal(PrioCutoffModal(self.minimo, self.source))
 
     @discord.ui.button(label="Exportar CSV", style=discord.ButtonStyle.secondary)
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2365,10 +2573,17 @@ class PrioDashboardView(SafeView):
             await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        candidates = build_priority_candidates(self.minimo)
+        source_data = get_priority_source(self.source)
+        candidates = build_priority_candidates(self.minimo, source_data["rows"])
         protected = get_priority_protected_members(interaction.guild)
-        embed = build_priority_decision_embed(self.minimo, candidates, protected)
-        file = build_priority_csv_file(self.minimo, interaction.guild)
+        embed = build_priority_decision_embed(
+            self.minimo,
+            candidates,
+            protected,
+            source_data["label"],
+            source_data["rows"],
+        )
+        file = build_priority_csv_file(self.minimo, interaction.guild, self.source)
         await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
     @discord.ui.button(label="Ver caps", style=discord.ButtonStyle.secondary)
@@ -2380,14 +2595,15 @@ class PrioDashboardView(SafeView):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
-        await interaction.response.send_modal(PrioApplyConfirmModal(self.minimo))
+        await interaction.response.send_modal(PrioApplyConfirmModal(self.minimo, self.source))
 
 
 class PrioCutoffModal(SafeModal):
     value = discord.ui.TextInput(label="Corte de puntos", placeholder="Ej: 50", max_length=4)
 
-    def __init__(self, current_minimo: int):
+    def __init__(self, current_minimo: int, source: str = "actual"):
         super().__init__(title="Cambiar corte de prio")
+        self.source = normalize_priority_source(source)
         self.value.default = str(current_minimo)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -2408,17 +2624,18 @@ class PrioCutoffModal(SafeModal):
             return
 
         await interaction.response.edit_message(
-            embed=build_priority_dashboard_embed(interaction.guild, role, minimo),
-            view=PrioDashboardView(minimo),
+            embed=build_priority_dashboard_embed(interaction.guild, role, minimo, self.source),
+            view=PrioDashboardView(minimo, self.source),
         )
 
 
 class PrioApplyConfirmModal(SafeModal):
     confirmation = discord.ui.TextInput(label="Confirmacion", placeholder="Escribe APLICAR", max_length=10)
 
-    def __init__(self, minimo: int):
+    def __init__(self, minimo: int, source: str = "actual"):
         super().__init__(title=f"Aplicar prio {minimo}+ pts")
         self.minimo = minimo
+        self.source = normalize_priority_source(source)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not is_admin(interaction):
@@ -2445,9 +2662,9 @@ class PrioApplyConfirmModal(SafeModal):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await sync_priority_role(interaction.guild, role, self.minimo)
+        result = await sync_priority_role(interaction.guild, role, self.minimo, self.source)
         embed = build_priority_apply_embed(self.minimo, role, result)
-        file = build_priority_csv_file(self.minimo, interaction.guild)
+        file = build_priority_csv_file(self.minimo, interaction.guild, self.source)
         await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
 
@@ -2455,6 +2672,14 @@ def get_priority_role(interaction: discord.Interaction):
     if not interaction.guild:
         return None
     return interaction.guild.get_role(PRIORITY_ROLE_ID)
+
+
+def archive_current_weekly_ranking(reason: str):
+    return create_ranking_snapshot(
+        current_weekly_ranking_start(),
+        datetime.now(timezone.utc),
+        reason,
+    )
 
 
 @admin_group.command(name="reset_ranking", description="Resetea todos los puntos del ranking")
@@ -2467,11 +2692,14 @@ async def reset_ranking(interaction: discord.Interaction, confirmacion: str):
         await interaction.response.send_message("Escribe `RESET` en confirmacion para resetear el ranking.", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    snapshot_id = archive_current_weekly_ranking("manual_reset")
     reset_all()
     await publish_or_update_dashboard()
     await publish_or_update_info_ranking()
-    await send_log(f"Ranking reseteado por {interaction.user.mention}.")
-    await interaction.response.send_message("Ranking reseteado.", ephemeral=True)
+    snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else " No habia puntos para archivar."
+    await send_log(f"Ranking reseteado por {interaction.user.mention}.{snapshot_text}")
+    await interaction.followup.send(f"Ranking reseteado.{snapshot_text}", ephemeral=True)
 
 
 async def send_log(text: str):
@@ -2485,7 +2713,7 @@ async def send_log(text: str):
     await channel.send(text)
 
 
-async def send_weekly_ranking_export():
+async def send_weekly_ranking_export(snapshot_id: int | None = None):
     if not WEEKLY_EXPORT_CHANNEL_ID:
         return
 
@@ -2494,8 +2722,9 @@ async def send_weekly_ranking_export():
         channel = await bot.fetch_channel(WEEKLY_EXPORT_CHANNEL_ID)
 
     filename = f"ranking_scouts_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv"
+    snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else ""
     await channel.send(
-        content="Export semanal del ranking antes del reset.",
+        content=f"Export semanal del ranking antes del reset.{snapshot_text}",
         file=build_ranking_csv_file(filename),
     )
 
@@ -2508,11 +2737,13 @@ async def weekly_reset_loop():
         print(f"[RESET] Proximo reset ranking: {target.isoformat()}")
         await asyncio.sleep(wait_seconds)
         try:
-            await send_weekly_ranking_export()
+            snapshot_id = archive_current_weekly_ranking("weekly_reset")
+            await send_weekly_ranking_export(snapshot_id)
             reset_all()
             await publish_or_update_dashboard()
             await publish_or_update_info_ranking()
-            await send_log("Reset semanal del ranking ejecutado automaticamente.")
+            snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else " No habia puntos para archivar."
+            await send_log(f"Reset semanal del ranking ejecutado automaticamente.{snapshot_text}")
         except Exception as err:
             print(f"[RESET ERROR] {err}")
 

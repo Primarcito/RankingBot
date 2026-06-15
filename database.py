@@ -13,6 +13,7 @@ DEFAULT_ACTIVITY_POINTS = {
     "scouteo": 2,
     "mapeo": 1,
 }
+ACTIVITY_COLUMNS = tuple(DEFAULT_ACTIVITY_POINTS.keys())
 CONFIG_REPAIR_MARKER = "__repair_points_config_2026_05_25"
 PRIORITY_LEVELS = (
     {"level": "S", "min": 120, "max": None, "benefit": "Maxima prioridad"},
@@ -72,7 +73,8 @@ def init_db():
                 fecha TEXT,
                 status TEXT DEFAULT 'approved',
                 review_message_id TEXT,
-                thread_id TEXT
+                thread_id TEXT,
+                target_snapshot_id INTEGER
             )
         """)
         c.execute("""
@@ -99,6 +101,31 @@ def init_db():
                 value TEXT
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ranking_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT,
+                period_start TEXT,
+                period_end TEXT,
+                reason TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ranking_snapshot_rows (
+                snapshot_id INTEGER,
+                user_id TEXT,
+                username TEXT,
+                kill_scout INTEGER,
+                kill_pelea INTEGER,
+                limpieza_aspecto INTEGER,
+                scouteo INTEGER,
+                mapeo INTEGER,
+                total_puntos INTEGER,
+                nivel TEXT,
+                beneficio TEXT,
+                PRIMARY KEY (snapshot_id, user_id)
+            )
+        """)
         c.execute("PRAGMA table_info(evidence_messages)")
         cols = [row[1] for row in c.fetchall()]
         if "status" not in cols:
@@ -107,6 +134,8 @@ def init_db():
             c.execute("ALTER TABLE evidence_messages ADD COLUMN review_message_id TEXT")
         if "thread_id" not in cols:
             c.execute("ALTER TABLE evidence_messages ADD COLUMN thread_id TEXT")
+        if "target_snapshot_id" not in cols:
+            c.execute("ALTER TABLE evidence_messages ADD COLUMN target_snapshot_id INTEGER")
         c.execute("PRAGMA table_info(evidence_participants)")
         participant_cols = [row[1] for row in c.fetchall()]
         if "cantidad" not in participant_cols:
@@ -185,26 +214,41 @@ def add_activity(user_id: str, username: str, actividad: str, cantidad: int):
         conn.commit()
     return total_puntos
 
-def create_evidence_review(message_id: str, user_id: str, username: str, actividad: str, participants=None):
-    ensure_scout(user_id, username)
+def create_evidence_review(
+    message_id: str,
+    user_id: str,
+    username: str,
+    actividad: str,
+    participants=None,
+    target_snapshot_id=None,
+):
+    target_snapshot_id = int(target_snapshot_id) if target_snapshot_id else None
+    if not target_snapshot_id:
+        ensure_scout(user_id, username)
     participants = participants or [(user_id, username)]
     puntos_unit = get_puntos(actividad)
     fecha = datetime.utcnow().isoformat()
     with get_conn() as conn:
         try:
             conn.execute(
-                "INSERT INTO evidence_messages (message_id, user_id, actividad, puntos, fecha, status) VALUES (?,?,?,?,?,?)",
-                (message_id, user_id, actividad, puntos_unit, fecha, "pending")
+                """
+                INSERT INTO evidence_messages (
+                    message_id, user_id, actividad, puntos, fecha, status, target_snapshot_id
+                )
+                VALUES (?,?,?,?,?,?,?)
+                """,
+                (message_id, user_id, actividad, puntos_unit, fecha, "pending", target_snapshot_id)
             )
         except sqlite3.IntegrityError:
             return 0
         for participant in participants:
             participant_id, participant_name, cantidad = normalize_participant_entry(participant)
-            conn.execute(
-                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
-                (str(participant_id), participant_name)
-            )
-            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
+            if not target_snapshot_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                    (str(participant_id), participant_name)
+                )
+                conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
             conn.execute(
                 """
                 INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username, cantidad)
@@ -254,18 +298,20 @@ def get_evidence_review_message_id(message_id: str):
 def add_evidence_participants(message_id: str, participants):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT status FROM evidence_messages WHERE message_id=?",
+            "SELECT status, target_snapshot_id FROM evidence_messages WHERE message_id=?",
             (message_id,)
         ).fetchone()
         if not row or row[0] != "pending":
             return False
+        target_snapshot_id = row[1]
         for participant in participants:
             participant_id, participant_name, cantidad = normalize_participant_entry(participant)
-            conn.execute(
-                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
-                (str(participant_id), participant_name)
-            )
-            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
+            if not target_snapshot_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                    (str(participant_id), participant_name)
+                )
+                conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
             conn.execute(
                 """
                 INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username, cantidad)
@@ -316,12 +362,16 @@ def get_today_evidence_count() -> int:
 def approve_evidence(message_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT user_id, actividad, puntos, status, review_message_id FROM evidence_messages WHERE message_id=?",
+            """
+            SELECT user_id, actividad, puntos, status, review_message_id, target_snapshot_id
+            FROM evidence_messages
+            WHERE message_id=?
+            """,
             (message_id,)
         ).fetchone()
         if not row or row[3] != "pending":
             return None
-        user_id, actividad, _, _, review_message_id = row
+        user_id, actividad, _, _, review_message_id, target_snapshot_id = row
         puntos = get_puntos(actividad)
         participants = conn.execute(
             "SELECT user_id, username, cantidad FROM evidence_participants WHERE message_id=?",
@@ -333,22 +383,100 @@ def approve_evidence(message_id: str):
 
         for participant_id, username, cantidad in participants:
             cantidad = max(1, int(cantidad or 1))
-            conn.execute(
-                "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
-                (str(participant_id), username)
-            )
-            conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (username, str(participant_id)))
-            conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + ? WHERE user_id=?", (cantidad, participant_id))
-            conn.execute(
-                "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-                (participant_id, username, actividad, cantidad, puntos * cantidad, datetime.utcnow().isoformat(), "evidencia_aprobada")
-            )
+            if target_snapshot_id:
+                _apply_snapshot_activity(
+                    conn,
+                    int(target_snapshot_id),
+                    str(participant_id),
+                    username,
+                    actividad,
+                    cantidad,
+                    puntos,
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
+                    (str(participant_id), username)
+                )
+                conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (username, str(participant_id)))
+                conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + ? WHERE user_id=?", (cantidad, participant_id))
+                conn.execute(
+                    "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
+                    (participant_id, username, actividad, cantidad, puntos * cantidad, datetime.utcnow().isoformat(), "evidencia_aprobada")
+                )
         conn.execute(
             "UPDATE evidence_messages SET status='approved' WHERE message_id=?",
             (message_id,)
         )
         conn.commit()
-    return user_id, actividad, puntos, review_message_id
+    return user_id, actividad, puntos, review_message_id, target_snapshot_id
+
+def _apply_snapshot_activity(conn, snapshot_id: int, user_id: str, username: str, actividad: str, cantidad: int, puntos_unit: int):
+    if actividad not in ACTIVITY_COLUMNS:
+        raise ValueError(f"Actividad no valida para cierre: {actividad}")
+
+    cantidad = max(1, int(cantidad or 1))
+    delta_points = int(puntos_unit or 0) * cantidad
+    row = conn.execute(
+        """
+        SELECT total_puntos
+        FROM ranking_snapshot_rows
+        WHERE snapshot_id=? AND user_id=?
+        """,
+        (snapshot_id, user_id),
+    ).fetchone()
+
+    if row:
+        total_points = int(row[0] or 0) + delta_points
+        nivel, beneficio = get_nivel(total_points)
+        conn.execute(
+            f"""
+            UPDATE ranking_snapshot_rows
+            SET username=?, {actividad}=COALESCE({actividad}, 0) + ?,
+                total_puntos=?, nivel=?, beneficio=?
+            WHERE snapshot_id=? AND user_id=?
+            """,
+            (username, cantidad, total_points, nivel, beneficio, snapshot_id, user_id),
+        )
+    else:
+        counts = {column: 0 for column in ACTIVITY_COLUMNS}
+        counts[actividad] = cantidad
+        nivel, beneficio = get_nivel(delta_points)
+        conn.execute(
+            """
+            INSERT INTO ranking_snapshot_rows (
+                snapshot_id, user_id, username, kill_scout, kill_pelea,
+                limpieza_aspecto, scouteo, mapeo, total_puntos, nivel, beneficio
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id,
+                user_id,
+                username,
+                counts["kill_scout"],
+                counts["kill_pelea"],
+                counts["limpieza_aspecto"],
+                counts["scouteo"],
+                counts["mapeo"],
+                delta_points,
+                nivel,
+                beneficio,
+            ),
+        )
+
+    conn.execute(
+        "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
+        (
+            user_id,
+            username,
+            actividad,
+            cantidad,
+            delta_points,
+            datetime.utcnow().isoformat(),
+            f"cierre_{snapshot_id}_aprobado",
+        ),
+    )
 
 def normalize_participant_entry(participant):
     if len(participant) >= 3:
@@ -455,6 +583,94 @@ def reset_all():
     with get_conn() as conn:
         conn.execute("DELETE FROM scouts")
         conn.commit()
+
+def create_ranking_snapshot(period_start=None, period_end=None, reason: str = "manual"):
+    rows = get_all_scouts()
+    if not rows:
+        return None
+
+    created_at = datetime.utcnow().isoformat()
+    period_start_text = isoformat_or_text(period_start)
+    period_end_text = isoformat_or_text(period_end) or created_at
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO ranking_snapshots (created_at, period_start, period_end, reason)
+            VALUES (?, ?, ?, ?)
+            """,
+            (created_at, period_start_text, period_end_text, reason),
+        )
+        snapshot_id = cursor.lastrowid
+        for row in rows:
+            points = calc_puntos_totales(row)
+            nivel, beneficio = get_nivel(points)
+            conn.execute(
+                """
+                INSERT INTO ranking_snapshot_rows (
+                    snapshot_id, user_id, username, kill_scout, kill_pelea,
+                    limpieza_aspecto, scouteo, mapeo, total_puntos, nivel, beneficio
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (snapshot_id, *row, points, nivel, beneficio),
+            )
+        conn.commit()
+    return snapshot_id
+
+def get_latest_ranking_snapshot():
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT s.id, s.created_at, s.period_start, s.period_end, s.reason,
+                   COUNT(r.user_id) AS total_rows
+            FROM ranking_snapshots s
+            LEFT JOIN ranking_snapshot_rows r ON r.snapshot_id = s.id
+            GROUP BY s.id
+            ORDER BY s.id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return row
+
+def get_ranking_snapshot_for_time(moment):
+    moment_text = isoformat_or_text(moment)
+    if not moment_text:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT s.id, s.created_at, s.period_start, s.period_end, s.reason,
+                   COUNT(r.user_id) AS total_rows
+            FROM ranking_snapshots s
+            LEFT JOIN ranking_snapshot_rows r ON r.snapshot_id = s.id
+            WHERE (s.period_start IS NULL OR s.period_start <= ?)
+              AND (s.period_end IS NULL OR s.period_end >= ?)
+            GROUP BY s.id
+            ORDER BY s.id DESC
+            LIMIT 1
+            """,
+            (moment_text, moment_text),
+        ).fetchone()
+    return row
+
+def get_ranking_snapshot_rows(snapshot_id: int):
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT user_id, username, kill_scout, kill_pelea, limpieza_aspecto,
+                   scouteo, mapeo, total_puntos, nivel, beneficio
+            FROM ranking_snapshot_rows
+            WHERE snapshot_id=?
+            ORDER BY total_puntos DESC, username
+            """,
+            (snapshot_id,),
+        ).fetchall()
+    return rows
+
+def isoformat_or_text(value):
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 # ── Config ───────────────────────────────────────────────────────────────────
 

@@ -1,9 +1,10 @@
 import csv
 import io
 import asyncio
+from datetime import datetime, timedelta, timezone
 import discord
-from database import add_activity, add_evidence_participants, add_scout_alias, approve_evidence, calc_puntos_totales, get_all_config, get_all_scouts, get_bot_state, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
-from config import ACTIVIDADES, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, DASHBOARD_CHANNEL_ID
+from database import add_activity, add_evidence_participants, add_scout_alias, approve_evidence, calc_puntos_totales, create_ranking_snapshot, get_all_config, get_all_scouts, get_bot_state, get_evidence_participants, get_nivel, reject_evidence, reset_all, set_puntos, subtract_activity
+from config import ACTIVIDADES, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC, COLOR_PANEL, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, DASHBOARD_CHANNEL_ID
 from permissions import can_review_evidence, is_admin
 import participants as participant_tools
 
@@ -338,8 +339,13 @@ class ResetView(discord.ui.View):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
             return
+        snapshot_id = create_ranking_snapshot(current_weekly_ranking_start(), datetime.now(timezone.utc), "dashboard_reset")
         reset_all()
-        embed = discord.Embed(description="✅ Todos los conteos han sido reseteados.", color=COLOR_SUCCESS)
+        snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else " No habia puntos para archivar."
+        embed = discord.Embed(
+            description=f"✅ Todos los conteos han sido reseteados.{snapshot_text}",
+            color=COLOR_SUCCESS,
+        )
         await interaction.response.edit_message(embed=embed, view=None)
 
 
@@ -347,6 +353,21 @@ class ResetView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(description="Reset cancelado.", color=COLOR_ERROR)
         await interaction.response.edit_message(embed=embed, view=None)
+
+
+def current_weekly_ranking_start():
+    now = datetime.now(timezone.utc)
+    target = now.replace(
+        hour=AUTO_RESET_HOUR_UTC,
+        minute=AUTO_RESET_MINUTE_UTC,
+        second=0,
+        microsecond=0,
+    )
+    days_back = (target.weekday() - AUTO_RESET_WEEKDAY_UTC) % 7
+    target = target - timedelta(days=days_back)
+    if target > now:
+        target = target - timedelta(days=7)
+    return target
 
 
 class EvidenceAuthorConfirmView(discord.ui.View):
