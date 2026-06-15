@@ -23,7 +23,9 @@ def extract_plus_names(text: str) -> list[str]:
 
 def contains_participant_reference(text: str):
     text = text or ""
-    return bool(PLUS_NAME_RE.search(text) or MENTION_RE.search(text) or ID_RE.search(text))
+    if PLUS_NAME_RE.search(text) or MENTION_RE.search(text) or ID_RE.search(text):
+        return True
+    return len(extract_manual_names(text)) >= 2
 
 
 def extract_manual_names(text: str) -> list[str]:
@@ -37,10 +39,11 @@ def extract_manual_names(text: str) -> list[str]:
             consumed_spans.append(match.span())
 
     remaining = remove_spans(text, consumed_spans)
-    for chunk in re.split(r"[\n,;]+", remaining):
-        chunk = chunk.strip().strip("@+")
+    for chunk in re.split(r"[\n,;|/]+", remaining):
+        chunk = chunk.strip().strip("@+•*-_")
         if not chunk:
             continue
+        chunk = re.sub(r"\s*(?:->|=>|:)\s*", " ", chunk)
         if " " in chunk:
             names.extend(part.strip().strip("@+") for part in chunk.split() if part.strip())
         else:
@@ -281,7 +284,7 @@ def format_participant_suggestions(suggestions: list[dict]):
     lines = []
     for suggestion in suggestions[:10]:
         lines.append(
-            f"`+{suggestion['raw']}` -> <@{suggestion['user_id']}> "
+            f"`{suggestion['raw']}` -> <@{suggestion['user_id']}> "
             f"({suggestion['score']}%, {suggestion['source']})"
         )
     if len(suggestions) > 10:

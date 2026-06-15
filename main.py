@@ -50,6 +50,7 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_RANKING, COLO
 from views import (
     DashboardView,
     EvidenceAuthorConfirmView,
+    EvidenceThreadParticipantView,
     EvidenceReviewView,
     EvidenceReviewerSuggestionConfirmView,
     InfoRankingView,
@@ -248,7 +249,7 @@ async def on_message(message: discord.Message):
     if unresolved_names:
         embed.add_field(
             name="No resueltos",
-            value=", ".join(f"+{name}" for name in unresolved_names)[:1000],
+            value=", ".join(f"`{name}`" for name in unresolved_names)[:1000],
             inline=False
         )
     if suggested_participants:
@@ -663,7 +664,7 @@ async def create_scouteo_count_review(
     if unresolved_names:
         embed.add_field(
             name="No resueltos",
-            value=", ".join(f"+{name}" for name in unresolved_names)[:1000],
+            value=", ".join(f"`{name}`" for name in unresolved_names)[:1000],
             inline=False
         )
     if suggested_participants:
@@ -697,14 +698,14 @@ def build_participant_confirmation_embed(suggestions: list[dict], unresolved_nam
     elif has_suggestions:
         title = "Confirmar participantes"
         description = (
-            "Reconoci algunos nombres escritos con `+`. "
+            "Reconoci algunos nombres escritos en la evidencia. "
             "Marca solo las personas correctas y confirma para agregarlas a la evidencia."
         )
     else:
         title = "Participantes sin reconocer"
         description = (
             "No pude asociar estos nombres a una cuenta. "
-            "Corrigelos en este hilo con menciones, IDs o `+nombres`."
+            "Corrigelos en este hilo con menciones, IDs, `+nombres` o nombres separados por espacios."
         )
 
     embed = discord.Embed(
@@ -721,7 +722,7 @@ def build_participant_confirmation_embed(suggestions: list[dict], unresolved_nam
     if unresolved_names:
         embed.add_field(
             name="Sin coincidencia",
-            value=", ".join(f"+{name}" for name in unresolved_names)[:1000],
+            value=", ".join(f"`{name}`" for name in unresolved_names)[:1000],
             inline=False,
         )
     return embed
@@ -756,13 +757,13 @@ async def create_participant_thread(
         embed.add_field(
             name="Como corregir",
             value=(
-                "Escribe aqui menciones, IDs o nombres con `+`. "
-                "Ejemplo: `+violeth +chino +littleponny`."
+                "Escribe aqui menciones, IDs, `+nombres`, comas, saltos de linea o nombres separados por espacios. "
+                "Ejemplo: `violeth chino littleponny`."
             ),
             inline=False,
         )
 
-        view = None
+        view = EvidenceThreadParticipantView(str(message.id), review_msg)
         if suggestions:
             view = EvidenceAuthorConfirmView(
                 str(message.id),
@@ -2097,7 +2098,7 @@ def build_bulk_points_result_embed(
     if unresolved:
         embed.add_field(
             name="No encontrados",
-            value=", ".join(f"`+{name}`" for name in unresolved[:25])[:1000],
+            value=", ".join(f"`{name}`" for name in unresolved[:25])[:1000],
             inline=False,
         )
     if suggestions:

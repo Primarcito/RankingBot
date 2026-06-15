@@ -378,7 +378,7 @@ class EvidenceAuthorConfirmView(discord.ui.View):
         suggestions: list[dict],
         review_message: discord.Message,
     ):
-        super().__init__(timeout=600)
+        super().__init__(timeout=86400)
         self.evidence_message_id = evidence_message_id
         self.author_id = str(author_id)
         self.suggestions = dedupe_suggestions_by_user(suggestions)
@@ -387,13 +387,15 @@ class EvidenceAuthorConfirmView(discord.ui.View):
 
         if self.suggestions:
             self.add_item(EvidenceSuggestionSelect(self.suggestions))
+        self.add_item(EvidenceAddByTextButton(evidence_message_id, review_message))
+        self.add_item(EvidenceAddParticipantsButton(evidence_message_id, review_message))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if str(interaction.user.id) == self.author_id:
+        if str(interaction.user.id) == self.author_id or can_review_evidence(interaction):
             return True
 
         await interaction.response.send_message(
-            "Solo quien subio la evidencia puede confirmar estos participantes.",
+            "Solo quien subio la evidencia o un revisor puede confirmar estos participantes.",
             ephemeral=True,
         )
         return False
@@ -459,7 +461,7 @@ class EvidenceSuggestionSelect(discord.ui.Select):
     def __init__(self, suggestions: list[dict]):
         options = []
         for suggestion in suggestions[:25]:
-            raw_names = ", ".join(f"+{name}" for name in suggestion["raw_names"][:3])
+            raw_names = ", ".join(suggestion["raw_names"][:3])
             label = truncate_text(f"{raw_names} -> {suggestion['display_name']}", 100)
             description = truncate_text(
                 f"{suggestion['score']}% coincidencia desde {suggestion['source']}",
@@ -488,12 +490,14 @@ class EvidenceSuggestionSelect(discord.ui.Select):
 
 class EvidenceReviewerSuggestionConfirmView(discord.ui.View):
     def __init__(self, evidence_message_id: str, review_message: discord.Message, suggestions: list[dict]):
-        super().__init__(timeout=120)
+        super().__init__(timeout=86400)
         self.evidence_message_id = evidence_message_id
         self.review_message = review_message
         self.suggestions = dedupe_suggestions_by_user(suggestions)
         self.selected_user_ids = {suggestion["user_id"] for suggestion in self.suggestions}
         self.add_item(EvidenceSuggestionSelect(self.suggestions))
+        self.add_item(EvidenceAddByTextButton(evidence_message_id, review_message))
+        self.add_item(EvidenceAddParticipantsButton(evidence_message_id, review_message))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if can_review_evidence(interaction):
@@ -535,6 +539,13 @@ class EvidenceReviewerSuggestionConfirmView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=None)
 
 
+class EvidenceThreadParticipantView(discord.ui.View):
+    def __init__(self, evidence_message_id: str, review_message: discord.Message):
+        super().__init__(timeout=86400)
+        self.add_item(EvidenceAddByTextButton(evidence_message_id, review_message))
+        self.add_item(EvidenceAddParticipantsButton(evidence_message_id, review_message))
+
+
 class EvidenceReviewView(discord.ui.View):
     def __init__(self, evidence_message_id: str):
         super().__init__(timeout=None)
@@ -546,13 +557,14 @@ class EvidenceReviewView(discord.ui.View):
 
 
 class EvidenceAddByTextButton(discord.ui.Button):
-    def __init__(self, evidence_message_id: str):
+    def __init__(self, evidence_message_id: str, review_message: discord.Message | None = None):
         super().__init__(
             label="Agregar por texto",
             style=discord.ButtonStyle.secondary,
             custom_id=f"evidence_add_text:{evidence_message_id}"
         )
         self.evidence_message_id = evidence_message_id
+        self.review_message = review_message
 
     async def callback(self, interaction: discord.Interaction):
         if not can_review_evidence(interaction):
@@ -560,14 +572,14 @@ class EvidenceAddByTextButton(discord.ui.Button):
             return
 
         await interaction.response.send_modal(
-            EvidenceParticipantTextModal(self.evidence_message_id, interaction.message)
+            EvidenceParticipantTextModal(self.evidence_message_id, self.review_message or interaction.message)
         )
 
 
 class EvidenceParticipantTextModal(discord.ui.Modal):
     nombres = discord.ui.TextInput(
         label="Nombres, menciones o IDs",
-        placeholder="+violeth +chino +peccato +shourout +sherlock +littleponny",
+        placeholder="violeth chino peccato\n+shourout @sherlock 123456789012345678",
         style=discord.TextStyle.paragraph,
         max_length=1000,
     )
@@ -606,13 +618,14 @@ class EvidenceParticipantTextModal(discord.ui.Modal):
 
 
 class EvidenceAddParticipantsButton(discord.ui.Button):
-    def __init__(self, evidence_message_id: str):
+    def __init__(self, evidence_message_id: str, review_message: discord.Message | None = None):
         super().__init__(
             label="Agregar por selector",
             style=discord.ButtonStyle.secondary,
             custom_id=f"evidence_add_people:{evidence_message_id}"
         )
         self.evidence_message_id = evidence_message_id
+        self.review_message = review_message
 
     async def callback(self, interaction: discord.Interaction):
         if not can_review_evidence(interaction):
@@ -626,7 +639,7 @@ class EvidenceAddParticipantsButton(discord.ui.Button):
         )
         await interaction.response.send_message(
             embed=embed,
-            view=EvidenceParticipantSelectView(self.evidence_message_id, interaction.message),
+            view=EvidenceParticipantSelectView(self.evidence_message_id, self.review_message or interaction.message),
             ephemeral=True
         )
 
@@ -784,7 +797,7 @@ def build_participant_resolution_embed(added, suggestions: list[dict], unresolve
     if unresolved:
         embed.add_field(
             name="Sin coincidencia",
-            value=", ".join(f"`+{name}`" for name in unresolved[:25])[:1000],
+            value=", ".join(f"`{name}`" for name in unresolved[:25])[:1000],
             inline=False,
         )
     if not added and not suggestions and not unresolved:
