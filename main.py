@@ -2661,6 +2661,16 @@ def get_priority_protected_members(guild: discord.Guild | None):
     return sorted(members_by_id.values(), key=lambda member: member.display_name.lower())
 
 
+def format_priority_member_changes(members: list[discord.Member], empty_text: str = "Nadie."):
+    if not members:
+        return empty_text
+    sorted_members = sorted(members, key=lambda member: member.display_name.lower())
+    lines = [f"{member.mention} - `{member.display_name}`" for member in sorted_members[:20]]
+    if len(sorted_members) > 20:
+        lines.append(f"... y {len(sorted_members) - 20} mas")
+    return "\n".join(lines)[:1000]
+
+
 def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     embed = discord.Embed(
         title="Prio semanal sincronizada",
@@ -2676,6 +2686,16 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     embed.add_field(name="Ya tenian prio", value=str(len(result["already"])), inline=True)
     embed.add_field(name="Prio quitada", value=str(len(result["removed"])), inline=True)
     embed.add_field(name="Staff/GM protegidos", value=str(len(result["kept_protected"])), inline=True)
+    embed.add_field(
+        name=f"Anadidos ({len(result['assigned'])})",
+        value=format_priority_member_changes(result["assigned"]),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"Quitados ({len(result['removed'])})",
+        value=format_priority_member_changes(result["removed"]),
+        inline=False,
+    )
     if result["missing"]:
         embed.add_field(
             name="No encontrados",
