@@ -43,12 +43,12 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 | `/admin dashboard_scouts` | Publica o actualiza dashboard de scouts | Admin |
 | `/admin info_ranking` | Publica la guia y ranking general | Admin |
 | `/admin prio minimo fuente` | Panel semanal para exportar y sincronizar rol prio | Admin |
-| `/admin puntos` | Panel para sumar puntos en masa por actividad | Admin |
-| `/admin modificar_puntos` | Suma o resta actividades a un scout | Admin |
+| `/admin puntos fuente` | Panel para sumar o restar puntos en masa por actividad, en ranking actual o ultimo cierre | Admin |
+| `/admin modificar_puntos fuente` | Suma o resta actividades a un scout, en ranking actual o ultimo cierre | Admin |
 | `/admin registrar_alt` | Asocia nombres alternos a un scout | Admin |
 | `/admin quitar_alt` | Quita un nombre alterno | Admin |
 | `/admin ver_alts` | Muestra alts asociados a un scout | Admin |
-| `/admin export_ranking` | Exporta el ranking como CSV | Admin |
+| `/admin export_ranking fuente formato` | Exporta el ranking actual o el ultimo cierre semanal como Excel o CSV | Admin |
 | `/admin reset_ranking` | Resetea todos los puntos del ranking | Admin |
 
 ## Cierres semanales
@@ -56,6 +56,9 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar `/admin prio fuente:ultimo_cierre` para dar/quitar el rol prio aunque el ranking nuevo ya este limpio.
 
 Si `/admin conteo` se ejecuta despues del reset pero el resumen diario trae una fecha de la semana cerrada, la revision queda apuntando a ese cierre semanal. Al aprobarla suma esos puntos al cierre archivado, no al ranking nuevo.
+
+Para descargar la semana pasada usa `/admin export_ranking fuente:Ultimo cierre semanal formato:Excel (.xlsx)`.
+Para corregir esa semana usa `/admin modificar_puntos fuente:Ultimo cierre semanal` o `/admin puntos fuente:Ultimo cierre semanal`; las restas no bajan una actividad por debajo de 0.
 
 ## Niveles
 

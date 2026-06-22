@@ -616,6 +616,121 @@ def _apply_snapshot_activity(conn, snapshot_id: int, user_id: str, username: str
         ),
     )
 
+def adjust_snapshot_activity(snapshot_id: int, user_id: str, username: str, actividad: str, cantidad: int):
+    if actividad not in ACTIVITY_COLUMNS:
+        raise ValueError(f"Actividad no valida para cierre: {actividad}")
+
+    snapshot = get_ranking_snapshot(snapshot_id)
+    if not snapshot:
+        return {"ok": False, "reason": "snapshot_not_found"}
+
+    quantity = int(cantidad or 0)
+    if quantity == 0:
+        return {"ok": False, "reason": "zero_quantity"}
+
+    points_unit = get_puntos(actividad)
+    with get_conn() as conn:
+        row = conn.execute(
+            f"""
+            SELECT kill_scout, kill_pelea, limpieza_aspecto, scouteo, mapeo, total_puntos
+            FROM ranking_snapshot_rows
+            WHERE snapshot_id=? AND user_id=?
+            """,
+            (int(snapshot_id), str(user_id)),
+        ).fetchone()
+
+        if quantity > 0:
+            applied_units = quantity
+            delta_points = points_unit * applied_units
+            if row:
+                total_points = int(row[5] or 0) + delta_points
+                nivel, beneficio = get_nivel(total_points)
+                conn.execute(
+                    f"""
+                    UPDATE ranking_snapshot_rows
+                    SET username=?, {actividad}=COALESCE({actividad}, 0) + ?,
+                        total_puntos=?, nivel=?, beneficio=?
+                    WHERE snapshot_id=? AND user_id=?
+                    """,
+                    (username, applied_units, total_points, nivel, beneficio, int(snapshot_id), str(user_id)),
+                )
+            else:
+                counts = {column: 0 for column in ACTIVITY_COLUMNS}
+                counts[actividad] = applied_units
+                nivel, beneficio = get_nivel(delta_points)
+                conn.execute(
+                    """
+                    INSERT INTO ranking_snapshot_rows (
+                        snapshot_id, user_id, username, kill_scout, kill_pelea,
+                        limpieza_aspecto, scouteo, mapeo, total_puntos, nivel, beneficio
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(snapshot_id),
+                        str(user_id),
+                        username,
+                        counts["kill_scout"],
+                        counts["kill_pelea"],
+                        counts["limpieza_aspecto"],
+                        counts["scouteo"],
+                        counts["mapeo"],
+                        delta_points,
+                        nivel,
+                        beneficio,
+                    ),
+                )
+            action = f"cierre_{snapshot_id}_ajuste_suma"
+        else:
+            if not row:
+                return {"ok": False, "reason": "snapshot_user_not_found"}
+
+            activity_index = ACTIVITY_COLUMNS.index(actividad)
+            current_units = int(row[activity_index] or 0)
+            applied_units = min(abs(quantity), current_units)
+            if applied_units <= 0:
+                return {"ok": False, "reason": "nothing_to_subtract"}
+
+            delta_points = points_unit * applied_units
+            total_points = max(0, int(row[5] or 0) - delta_points)
+            nivel, beneficio = get_nivel(total_points)
+            conn.execute(
+                f"""
+                UPDATE ranking_snapshot_rows
+                SET username=?, {actividad}=MAX(0, COALESCE({actividad}, 0) - ?),
+                    total_puntos=?, nivel=?, beneficio=?
+                WHERE snapshot_id=? AND user_id=?
+                """,
+                (username, applied_units, total_points, nivel, beneficio, int(snapshot_id), str(user_id)),
+            )
+            action = f"cierre_{snapshot_id}_ajuste_resta"
+
+        conn.execute(
+            "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
+            (
+                str(user_id),
+                username,
+                actividad,
+                applied_units,
+                delta_points,
+                datetime.utcnow().isoformat(),
+                action,
+            ),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "snapshot_id": int(snapshot_id),
+        "user_id": str(user_id),
+        "username": username,
+        "activity": actividad,
+        "requested_units": quantity,
+        "applied_units": applied_units,
+        "points": delta_points,
+        "action": "sumar" if quantity > 0 else "restar",
+    }
+
 def normalize_participant_entry(participant):
     if len(participant) >= 3:
         participant_id, participant_name, cantidad = participant[:3]

@@ -5,7 +5,9 @@ import asyncio
 import traceback
 import re
 import unicodedata
+import zipfile
 from datetime import datetime, timedelta, timezone
+from xml.sax.saxutils import escape as xml_escape
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -15,6 +17,7 @@ from database import (
     add_activity,
     add_evidence_participants,
     add_scout_alias,
+    adjust_snapshot_activity,
     calc_puntos_totales,
     create_ranking_snapshot,
     create_evidence_review,
@@ -93,6 +96,14 @@ MAPEO_RELOCK_WEIGHT = 0.15
 ACT_CHOICES = [
     app_commands.Choice(name=meta["label"], value=key)
     for key, meta in ACTIVIDADES.items()
+]
+RANKING_SOURCE_CHOICES = [
+    app_commands.Choice(name="Ranking actual", value="actual"),
+    app_commands.Choice(name="Ultimo cierre semanal", value="ultimo_cierre"),
+]
+EXPORT_FORMAT_CHOICES = [
+    app_commands.Choice(name="Excel (.xlsx)", value="xlsx"),
+    app_commands.Choice(name="CSV", value="csv"),
 ]
 admin_group = app_commands.Group(name="admin", description="Herramientas de administracion del ranking")
 
@@ -2012,11 +2023,13 @@ async def publish_or_update_info_ranking():
 
 @admin_group.command(name="modificar_puntos", description="Suma o resta actividades a un scout")
 @app_commands.choices(actividad=ACT_CHOICES)
+@app_commands.choices(fuente=RANKING_SOURCE_CHOICES)
 async def modificar_puntos(
     interaction: discord.Interaction,
     usuario: discord.Member,
     actividad: app_commands.Choice[str],
     cantidad: int,
+    fuente: str = "actual",
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
@@ -2027,19 +2040,47 @@ async def modificar_puntos(
         return
 
     actividad_key = actividad.value
-    if cantidad > 0:
-        pts = add_activity(str(usuario.id), usuario.display_name, actividad_key, cantidad)
-        signo = "+"
+    source = normalize_priority_source(fuente)
+    snapshot = None
+    if source == "ultimo_cierre":
+        snapshot = get_latest_ranking_snapshot()
+        if not snapshot:
+            await interaction.response.send_message("Aun no hay cierre semanal guardado para ajustar.", ephemeral=True)
+            return
+        result = adjust_snapshot_activity(
+            int(snapshot[0]),
+            str(usuario.id),
+            usuario.display_name,
+            actividad_key,
+            cantidad,
+        )
+        if not result.get("ok"):
+            await interaction.response.send_message(
+                format_snapshot_adjust_error(result, usuario),
+                ephemeral=True,
+            )
+            return
+        pts = result["points"]
+        signo = "+" if cantidad > 0 else "-"
+        applied_quantity = result["applied_units"] if cantidad > 0 else -result["applied_units"]
+        source_label = f"Ultimo cierre semanal #{snapshot[0]} ({snapshot[3]})"
     else:
-        pts = subtract_activity(str(usuario.id), usuario.display_name, actividad_key, abs(cantidad))
-        signo = "-"
+        if cantidad > 0:
+            pts = add_activity(str(usuario.id), usuario.display_name, actividad_key, cantidad)
+            signo = "+"
+        else:
+            pts = subtract_activity(str(usuario.id), usuario.display_name, actividad_key, abs(cantidad))
+            signo = "-"
+        applied_quantity = cantidad
+        source_label = "Ranking actual"
 
     meta = ACTIVIDADES[actividad_key]
     embed = discord.Embed(
         description=(
             f"{meta['emoji']} **{meta['label']}**\n"
             f"Usuario: {usuario.mention}\n"
-            f"Cantidad: `{cantidad}`\n"
+            f"Fuente: **{source_label}**\n"
+            f"Cantidad aplicada: `{applied_quantity}`\n"
             f"Puntos: `{signo}{pts}`"
         ),
         color=COLOR_SUCCESS if cantidad > 0 else COLOR_ERROR,
@@ -2047,34 +2088,41 @@ async def modificar_puntos(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@admin_group.command(name="puntos", description="Panel para sumar puntos en masa")
-async def puntos(interaction: discord.Interaction):
+@admin_group.command(name="puntos", description="Panel para sumar o restar puntos en masa")
+@app_commands.choices(fuente=RANKING_SOURCE_CHOICES)
+async def puntos(interaction: discord.Interaction, fuente: str = "actual"):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        embed = build_bulk_points_dashboard_embed()
+        source = normalize_priority_source(fuente)
+        if source == "ultimo_cierre" and not get_latest_ranking_snapshot():
+            await interaction.followup.send("Aun no hay cierre semanal guardado para ajustar.", ephemeral=True)
+            return
+        embed = build_bulk_points_dashboard_embed(source)
     except Exception as err:
         traceback.print_exc()
         await interaction.followup.send(f"No pude construir el panel de puntos: `{err}`", ephemeral=True)
         return
 
-    await interaction.followup.send(embed=embed, view=BulkPointsDashboardView(), ephemeral=True)
+    await interaction.followup.send(embed=embed, view=BulkPointsDashboardView(source), ephemeral=True)
 
 
-def build_bulk_points_dashboard_embed():
+def build_bulk_points_dashboard_embed(source: str = "actual"):
     points_config = {activity: points for activity, points in get_all_config()}
     activity_lines = [
         f"{meta['emoji']} **{meta['label']}** - `{points_config.get(key, 0)} pts/unidad`"
         for key, meta in ACTIVIDADES.items()
     ]
+    source_data = get_ranking_export_source(source)
     embed = discord.Embed(
         title="Carga masiva de puntos",
         description=(
             "Elige una actividad y pega nombres con `+`, menciones o IDs.\n"
-            "Puedes ingresar la cantidad como `unidades` o como `puntos` finales."
+            "Puedes ingresar la cantidad como `unidades` o como `puntos` finales.\n"
+            f"Fuente: **{source_data['label']}**"
         ),
         color=COLOR_PANEL,
     )
@@ -2092,26 +2140,28 @@ def build_bulk_points_dashboard_embed():
 
 
 class BulkPointsDashboardView(SafeView):
-    def __init__(self):
+    def __init__(self, source: str = "actual"):
         super().__init__(timeout=300)
+        self.source = normalize_priority_source(source)
         for key, meta in ACTIVIDADES.items():
-            self.add_item(BulkPointsActivityButton(key, meta))
+            self.add_item(BulkPointsActivityButton(key, meta, self.source))
 
 
 class BulkPointsActivityButton(discord.ui.Button):
-    def __init__(self, actividad_key: str, meta: dict):
+    def __init__(self, actividad_key: str, meta: dict, source: str = "actual"):
         super().__init__(
             label=meta["label"],
             emoji=meta["emoji"],
             style=discord.ButtonStyle.primary if actividad_key == "kill_pelea" else discord.ButtonStyle.secondary,
         )
         self.actividad_key = actividad_key
+        self.source = normalize_priority_source(source)
 
     async def callback(self, interaction: discord.Interaction):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
-        await interaction.response.send_modal(BulkPointsModal(self.actividad_key))
+        await interaction.response.send_modal(BulkPointsModal(self.actividad_key, self.source))
 
 
 def parse_activity_amount(actividad_key: str, amount_text: str, quantity_type_text: str):
@@ -2142,7 +2192,34 @@ def parse_activity_amount(actividad_key: str, amount_text: str, quantity_type_te
     return 0, 0, "Tipo invalido. Usa `unidades` o `puntos`."
 
 
+def normalize_points_action(value: str | None):
+    text = str(value or "sumar").strip().lower()
+    if text in {"sumar", "suma", "+", "add"}:
+        return "sumar"
+    if text in {"restar", "resta", "-", "subtract"}:
+        return "restar"
+    return None
+
+
+def snapshot_adjust_error_text(result: dict):
+    reason = result.get("reason")
+    if reason == "snapshot_not_found":
+        return "no encontre ese cierre"
+    if reason == "zero_quantity":
+        return "cantidad cero"
+    if reason == "snapshot_user_not_found":
+        return "no estaba en el cierre"
+    if reason == "nothing_to_subtract":
+        return "no tiene unidades para restar"
+    return reason or "no se pudo ajustar"
+
+
+def format_snapshot_adjust_error(result: dict, usuario: discord.Member):
+    return f"No pude ajustar el cierre para {usuario.mention}: {snapshot_adjust_error_text(result)}."
+
+
 class BulkPointsModal(SafeModal):
+    accion = discord.ui.TextInput(label="Accion", placeholder="sumar o restar", default="sumar", max_length=8)
     cantidad = discord.ui.TextInput(label="Cantidad", placeholder="Ej: 24", max_length=6)
     tipo = discord.ui.TextInput(label="Tipo", placeholder="unidades o puntos", default="unidades", max_length=12)
     nombres = discord.ui.TextInput(
@@ -2158,14 +2235,20 @@ class BulkPointsModal(SafeModal):
         max_length=120,
     )
 
-    def __init__(self, actividad_key: str):
+    def __init__(self, actividad_key: str, source: str = "actual"):
         self.actividad_key = actividad_key
+        self.source = normalize_priority_source(source)
         meta = ACTIVIDADES[actividad_key]
         super().__init__(title=f"Carga masiva - {meta['label']}")
 
     async def on_submit(self, interaction: discord.Interaction):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        action = normalize_points_action(str(self.accion.value or "sumar"))
+        if not action:
+            await interaction.response.send_message("Accion invalida. Usa `sumar` o `restar`.", ephemeral=True)
             return
 
         units, requested_points, error = parse_activity_amount(
@@ -2192,17 +2275,45 @@ class BulkPointsModal(SafeModal):
                 unresolved,
                 suggestions,
                 str(self.motivo.value or ""),
+                action,
+                self.source,
+                get_latest_ranking_snapshot() if self.source == "ultimo_cierre" else None,
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
+        snapshot = get_latest_ranking_snapshot() if self.source == "ultimo_cierre" else None
+        if self.source == "ultimo_cierre" and not snapshot:
+            await interaction.followup.send("Aun no hay cierre semanal guardado para ajustar.", ephemeral=True)
+            return
+
         applied = []
         for user_id, username in participants:
-            points = add_activity(str(user_id), username, self.actividad_key, units)
-            applied.append((user_id, username, points))
+            signed_units = units if action == "sumar" else -units
+            if self.source == "ultimo_cierre":
+                result = adjust_snapshot_activity(
+                    int(snapshot[0]),
+                    str(user_id),
+                    username,
+                    self.actividad_key,
+                    signed_units,
+                )
+                if not result.get("ok"):
+                    unresolved.append(f"{username}: {snapshot_adjust_error_text(result)}")
+                    continue
+                points = result["points"]
+                applied_units = result["applied_units"]
+            elif action == "sumar":
+                points = add_activity(str(user_id), username, self.actividad_key, units)
+                applied_units = units
+            else:
+                points = subtract_activity(str(user_id), username, self.actividad_key, units)
+                applied_units = units
+            applied.append((user_id, username, points, applied_units))
 
-        await publish_or_update_dashboard()
-        await publish_or_update_info_ranking()
+        if self.source == "actual":
+            await publish_or_update_dashboard()
+            await publish_or_update_info_ranking()
         embed = build_bulk_points_result_embed(
             self.actividad_key,
             units,
@@ -2211,6 +2322,9 @@ class BulkPointsModal(SafeModal):
             unresolved,
             suggestions,
             str(self.motivo.value or ""),
+            action,
+            self.source,
+            snapshot,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -2219,17 +2333,24 @@ def build_bulk_points_result_embed(
     actividad_key: str,
     units: int,
     requested_points: int,
-    applied: list[tuple[str, str, int]],
+    applied: list[tuple],
     unresolved: list[str],
     suggestions: list[dict],
     motivo: str,
+    action: str = "sumar",
+    source: str = "actual",
+    snapshot=None,
 ):
     meta = ACTIVIDADES[actividad_key]
     color = COLOR_SUCCESS if applied else COLOR_WARNING
+    source_data = get_ranking_export_source(source)
+    sign = "+" if action == "sumar" else "-"
     embed = discord.Embed(
         title="Carga masiva aplicada" if applied else "Carga masiva sin aplicar",
         description=(
             f"{meta['emoji']} **{meta['label']}**\n"
+            f"Accion: **{action}**\n"
+            f"Fuente: **{source_data['label']}**\n"
             f"Cantidad por persona: `{units}` unidades = `{requested_points}` pts"
         ),
         color=color,
@@ -2237,13 +2358,19 @@ def build_bulk_points_result_embed(
     if motivo.strip():
         embed.add_field(name="Motivo", value=motivo.strip()[:1000], inline=False)
     if applied:
-        total_points = sum(points for _, _, points in applied)
+        total_points = sum(points for _, _, points, *_ in applied)
         lines = [
-            f"<@{user_id}> - `+{points}` pts"
-            for user_id, _, points in applied[:25]
+            f"<@{user_id}> - `{sign}{points}` pts"
+            for user_id, _, points, *_ in applied[:25]
         ]
         embed.add_field(name=f"Aplicados ({len(applied)})", value="\n".join(lines), inline=False)
-        embed.add_field(name="Total agregado", value=f"`{total_points}` pts", inline=True)
+        embed.add_field(
+            name="Total agregado" if action == "sumar" else "Total restado",
+            value=f"`{sign}{total_points}` pts",
+            inline=True,
+        )
+    if source == "ultimo_cierre" and snapshot:
+        embed.set_footer(text=f"Cierre semanal #{snapshot[0]} ajustado.")
     if unresolved:
         embed.add_field(
             name="No encontrados",
@@ -2314,28 +2441,213 @@ async def ver_alts(interaction: discord.Interaction, usuario: discord.Member):
     await interaction.response.send_message(f"Aliases de {usuario.mention}: {aliases}", ephemeral=True)
 
 
-@admin_group.command(name="export_ranking", description="Exporta el ranking como CSV")
-async def export_ranking(interaction: discord.Interaction):
+@admin_group.command(name="export_ranking", description="Exporta el ranking actual o el ultimo cierre semanal")
+@app_commands.choices(fuente=RANKING_SOURCE_CHOICES, formato=EXPORT_FORMAT_CHOICES)
+async def export_ranking(
+    interaction: discord.Interaction,
+    fuente: str = "ultimo_cierre",
+    formato: str = "xlsx",
+):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
-    file = build_ranking_csv_file("ranking_scouts.csv")
-    await interaction.response.send_message(file=file, ephemeral=True)
+    source = normalize_priority_source(fuente)
+    file_format = normalize_export_format(formato)
+    source_data = get_ranking_export_source(source)
+    if source_data["source"] == "ultimo_cierre" and not source_data["snapshot"]:
+        await interaction.response.send_message("Aun no hay cierre semanal guardado para exportar.", ephemeral=True)
+        return
+
+    filename = build_ranking_export_filename(source_data, file_format)
+    if file_format == "csv":
+        file = build_ranking_csv_file(filename, source)
+    else:
+        file = build_ranking_xlsx_file(filename, source)
+    await interaction.response.send_message(
+        content=f"Export: **{source_data['label']}**",
+        file=file,
+        ephemeral=True,
+    )
 
 
-def build_ranking_csv_file(filename: str):
+def build_ranking_csv_file(filename: str, source: str = "actual"):
+    source_data = get_ranking_export_source(source)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "nivel", "beneficio"])
 
-    for row in get_all_scouts():
-        pts = calc_puntos_totales(row)
-        nivel, beneficio = get_nivel(pts)
-        writer.writerow([*row, pts, nivel, beneficio])
+    for row in get_ranking_export_rows(source_data):
+        writer.writerow(row)
 
     output.seek(0)
     return discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename=filename)
+
+
+def build_ranking_xlsx_file(filename: str, source: str = "actual"):
+    source_data = get_ranking_export_source(source)
+    rows = [
+        ["Fuente", source_data["label"]],
+        [],
+        ["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "nivel", "beneficio"],
+        *get_ranking_export_rows(source_data),
+    ]
+    return discord.File(fp=io.BytesIO(build_xlsx_bytes(rows)), filename=filename)
+
+
+def get_ranking_export_source(source: str | None = "actual"):
+    source = normalize_priority_source(source)
+    if source == "ultimo_cierre":
+        snapshot = get_latest_ranking_snapshot()
+        if not snapshot:
+            return {
+                "source": source,
+                "label": "Ultimo cierre semanal (sin cierres guardados)",
+                "snapshot": None,
+                "rows": [],
+            }
+        return {
+            "source": source,
+            "label": f"Ultimo cierre semanal #{snapshot[0]} ({snapshot[3]})",
+            "snapshot": snapshot,
+            "rows": get_ranking_snapshot_rows(snapshot[0]),
+        }
+
+    return {
+        "source": "actual",
+        "label": "Ranking actual",
+        "snapshot": None,
+        "rows": get_all_scouts(),
+    }
+
+
+def get_ranking_export_rows(source_data: dict):
+    exported = []
+    for row in source_data["rows"]:
+        if source_data["source"] == "ultimo_cierre":
+            exported.append(list(row))
+            continue
+        pts = calc_puntos_totales(row)
+        nivel, beneficio = get_nivel(pts)
+        exported.append([*row, pts, nivel, beneficio])
+    exported.sort(key=lambda item: (-(int(item[7] or 0)), str(item[1]).lower()))
+    return exported
+
+
+def normalize_export_format(value: str | None):
+    text = str(value or "xlsx").strip().lower()
+    return "csv" if text == "csv" else "xlsx"
+
+
+def build_ranking_export_filename(source_data: dict, file_format: str):
+    if source_data["source"] == "ultimo_cierre" and source_data["snapshot"]:
+        snapshot = source_data["snapshot"]
+        date_text = safe_export_date(snapshot[3] or snapshot[1])
+        return f"ranking_ultimo_cierre_{date_text}.{file_format}"
+    date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"ranking_actual_{date_text}.{file_format}"
+
+
+def safe_export_date(value):
+    if not value:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    text = str(value)
+    match = re.match(r"(\d{4}-\d{2}-\d{2})", text)
+    return match.group(1) if match else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def build_xlsx_bytes(rows: list[list]):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as xlsx:
+        xlsx.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>""",
+        )
+        xlsx.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>""",
+        )
+        xlsx.writestr(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>""",
+        )
+        xlsx.writestr(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="Ranking" sheetId="1" r:id="rId1"/></sheets>
+</workbook>""",
+        )
+        xlsx.writestr("xl/worksheets/sheet1.xml", build_worksheet_xml(rows))
+        created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        xlsx.writestr(
+            "docProps/core.xml",
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<dc:creator>RankingBot</dc:creator><cp:lastModifiedBy>RankingBot</cp:lastModifiedBy>
+<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>
+<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>
+</cp:coreProperties>""",
+        )
+        xlsx.writestr(
+            "docProps/app.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+<Application>RankingBot</Application>
+</Properties>""",
+        )
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_worksheet_xml(rows: list[list]):
+    sheet_rows = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for col_index, value in enumerate(row, start=1):
+            cells.append(build_xlsx_cell(column_name(col_index), row_index, value))
+        sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+        "</worksheet>"
+    )
+
+
+def build_xlsx_cell(column: str, row_index: int, value):
+    ref = f"{column}{row_index}"
+    if value is None:
+        value = ""
+    if isinstance(value, bool):
+        return f'<c r="{ref}" t="b"><v>{1 if value else 0}</v></c>'
+    if isinstance(value, (int, float)):
+        return f'<c r="{ref}"><v>{value}</v></c>'
+    return f'<c r="{ref}" t="inlineStr"><is><t>{xml_escape(str(value))}</t></is></c>'
+
+
+def column_name(index: int):
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
 
 
 def normalize_priority_source(source: str | None):
@@ -2891,11 +3203,13 @@ async def send_weekly_ranking_export(snapshot_id: int | None = None):
     if not channel:
         channel = await bot.fetch_channel(WEEKLY_EXPORT_CHANNEL_ID)
 
-    filename = f"ranking_scouts_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv"
+    source = "ultimo_cierre" if snapshot_id else "actual"
+    source_data = get_ranking_export_source(source)
+    filename = build_ranking_export_filename(source_data, "xlsx")
     snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else ""
     await channel.send(
         content=f"Export semanal del ranking antes del reset.{snapshot_text}",
-        file=build_ranking_csv_file(filename),
+        file=build_ranking_xlsx_file(filename, source),
     )
 
 
