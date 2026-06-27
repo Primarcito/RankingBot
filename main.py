@@ -2589,7 +2589,7 @@ async def afks(
     members = await get_non_bot_guild_members(interaction.guild)
     candidates, summary = build_inactive_candidates(members, max_puntos, limit)
     embed = build_inactive_review_embed(candidates, summary, max_puntos, limit)
-    view = InactiveReviewView(candidates, max_puntos) if candidates else None
+    view = InactiveReviewView(candidates, summary, max_puntos, limit) if candidates else None
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -2682,98 +2682,161 @@ def ranking_export_row_to_inactive_entry(row):
     }
 
 
-def build_inactive_review_embed(candidates: list[dict], summary: dict, max_points: int, limit: int):
+def build_inactive_review_embed(
+    candidates: list[dict],
+    summary: dict,
+    max_points: int,
+    limit: int,
+    discarded_count: int = 0,
+):
     embed = discord.Embed(
-        title="Revision de AFKs por 2 semanas",
+        title="AFKs por 2 semanas",
         description=(
             f"Actual: **{summary['current_label']}**\n"
             f"Semana anterior: **{summary['previous_label']}**\n"
-            f"Criterio: **{max_points} pts o menos** en ambos rankings."
+            f"Criterio: **{max_points} pts o menos** en ambos rankings"
         ),
         color=COLOR_WARNING if candidates else COLOR_SUCCESS,
     )
-    embed.add_field(name="Ranking actual", value=str(summary["current_total"]), inline=True)
-    embed.add_field(name="Ranking anterior", value=str(summary["previous_total"]), inline=True)
-    embed.add_field(name="Miembros Discord", value=str(summary["member_total"]), inline=True)
-    embed.add_field(name="Candidatos", value=str(summary["candidate_total"]), inline=True)
+    embed.add_field(name="Miembros", value=str(summary["member_total"]), inline=True)
+    embed.add_field(name="Detectados", value=str(summary["candidate_total"]), inline=True)
+    embed.add_field(name="En revision", value=str(len(candidates)), inline=True)
+    if discarded_count:
+        embed.add_field(name="Descartados", value=str(discarded_count), inline=True)
 
     if not candidates:
         embed.add_field(
             name="Resultado",
-            value="No encontre scouts con puntos bajos en ambas semanas.",
+            value="No quedan candidatos en revision.",
             inline=False,
         )
         return embed
 
-    lines = [format_inactive_candidate_line(index, item) for index, item in enumerate(candidates, start=1)]
-    if summary["candidate_total"] > limit:
-        lines.append(f"... y {summary['candidate_total'] - limit} mas")
-    embed.add_field(name="Mas inactivos", value="\n".join(lines)[:1000], inline=False)
+    table = build_inactive_candidates_table(candidates)
+    if len(candidates) > limit:
+        table += f"\n... y {len(candidates) - limit} mas"
+    embed.add_field(name="Candidatos", value=f"```text\n{table}\n```", inline=False)
     embed.add_field(
-        name="Alcance",
-        value="Se evaluan todos los miembros actuales del Discord; si no aparecen en un ranking cuentan como 0 pts.",
+        name="Acciones",
+        value="Usa **Descartar del reporte** para limpiar falsos positivos. Usa **Kick** solo con los que quedan claros.",
         inline=False,
     )
-    embed.set_footer(text="El selector de kick aparece solo sobre los candidatos mostrados.")
+    embed.set_footer(text="Descartar no modifica puntos ni roles; solo limpia este reporte.")
     return embed
 
 
+def build_inactive_candidates_table(candidates: list[dict]):
+    lines = ["#  Usuario                 Act Ant"]
+    for index, item in enumerate(candidates[:25], start=1):
+        lines.append(format_inactive_candidate_line(index, item))
+    return "\n".join(lines)
+
+
 def format_inactive_candidate_line(index: int, item: dict):
-    return (
-        f"`#{index}` <@{item['user_id']}> - **{item['two_week_points']} pts** "
-        f"(actual {item['current_points']} | anterior {item['previous_points']})"
-    )
+    username = clean_inactive_table_name(item.get("username") or item["user_id"], 22)
+    return f"{index:>2} {username:<22} {item['current_points']:>3} {item['previous_points']:>3}"
+
+
+def clean_inactive_table_name(value, limit: int):
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = text.replace("`", "'")
+    if not text:
+        text = "Sin nombre"
+    if len(text) > limit:
+        return text[:limit - 1] + "."
+    return text
 
 
 class InactiveReviewView(SafeView):
-    def __init__(self, candidates: list[dict], max_points: int):
+    def __init__(self, candidates: list[dict], summary: dict, max_points: int, limit: int):
         super().__init__(timeout=600)
-        self.add_item(InactiveKickSelect(candidates, max_points))
-
-
-class InactiveKickSelect(discord.ui.Select):
-    def __init__(self, candidates: list[dict], max_points: int):
-        self.candidates_by_id = {str(item["user_id"]): item for item in candidates[:25]}
+        self.candidates = list(candidates)
+        self.summary = dict(summary)
         self.max_points = max_points
+        self.limit = limit
+        self.discarded_count = 0
+        self.refresh_items()
+
+    def refresh_items(self):
+        self.clear_items()
+        if not self.candidates:
+            return
+        self.add_item(InactiveCandidateSelect(self, "kick", "Selecciona scouts para kick", 0))
+        self.add_item(InactiveCandidateSelect(self, "discard", "Descartar del reporte", 1))
+
+    def current_embed(self):
+        return build_inactive_review_embed(
+            self.candidates,
+            self.summary,
+            self.max_points,
+            self.limit,
+            self.discarded_count,
+        )
+
+
+class InactiveCandidateSelect(discord.ui.Select):
+    def __init__(self, review_view: InactiveReviewView, action: str, placeholder: str, row: int):
+        self.review_view = review_view
+        self.action = action
         options = [
             discord.SelectOption(
-                label=select_option_label(item),
+                label=select_option_label(item, index),
                 value=str(item["user_id"]),
                 description=(
                     f"Actual {item['current_points']} pts | "
                     f"Anterior {item['previous_points']} pts"
                 )[:100],
             )
-            for item in candidates[:25]
+            for index, item in enumerate(review_view.candidates[:25], start=1)
         ]
         super().__init__(
-            placeholder="Selecciona scouts para kick",
+            placeholder=placeholder,
             min_values=1,
             max_values=max(1, len(options)),
             options=options,
+            row=row,
         )
 
     async def callback(self, interaction: discord.Interaction):
+        selected_ids = {str(user_id) for user_id in self.values}
+        selected = [
+            item
+            for item in self.review_view.candidates
+            if str(item["user_id"]) in selected_ids
+        ]
+        if not selected:
+            await interaction.response.send_message("No encontre candidatos seleccionados.", ephemeral=True)
+            return
+
+        if self.action == "discard":
+            if not (is_admin(interaction) or is_gm_member(interaction.user)):
+                await interaction.response.send_message("No tienes permiso para descartar candidatos.", ephemeral=True)
+                return
+            self.review_view.candidates = [
+                item
+                for item in self.review_view.candidates
+                if str(item["user_id"]) not in selected_ids
+            ]
+            self.review_view.discarded_count += len(selected)
+            self.review_view.refresh_items()
+            await interaction.response.edit_message(
+                embed=self.review_view.current_embed(),
+                view=self.review_view if self.review_view.candidates else None,
+            )
+            return
+
         if not is_gm_member(interaction.user):
             await interaction.response.send_message(
                 f"Solo el rol GM <@&{next(iter(GM_ROLE_IDS))}> puede usar esta opcion.",
                 ephemeral=True,
             )
             return
-        selected = [
-            self.candidates_by_id[user_id]
-            for user_id in self.values
-            if user_id in self.candidates_by_id
-        ]
-        if not selected:
-            await interaction.response.send_message("No encontre candidatos seleccionados.", ephemeral=True)
-            return
-        await interaction.response.send_modal(InactiveKickConfirmModal(selected, self.max_points))
+        await interaction.response.send_modal(InactiveKickConfirmModal(selected, self.review_view.max_points))
 
 
-def select_option_label(item: dict):
-    username = str(item.get("username") or item["user_id"])
-    text = f"{username} ({item['two_week_points']} pts)"
+def select_option_label(item: dict, index: int):
+    username = clean_inactive_table_name(item.get("username") or item["user_id"], 75)
+    text = f"#{index} {username} ({item['two_week_points']} pts)"
     return text[:100]
 
 
