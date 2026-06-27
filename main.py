@@ -2985,9 +2985,7 @@ def build_inactive_kick_result_embed(result: dict):
         title="Miembros kickeados",
         color=COLOR_SUCCESS if result["kicked"] and not result["errors"] else COLOR_WARNING,
     )
-    embed.add_field(name="Kickeados", value=f"**{len(result['kicked'])}**", inline=True)
-    embed.add_field(name="Omitidos", value=f"**{len(result['skipped'])}**", inline=True)
-    embed.add_field(name="Errores", value=f"**{len(result['errors'])}**", inline=True)
+    embed.add_field(name="Total", value=f"**{len(result['kicked'])}**", inline=True)
     if result["kicked"]:
         embed.add_field(
             name="Lista",
@@ -3004,7 +3002,6 @@ def build_inactive_kick_result_embed(result: dict):
         embed.add_field(name="Omitidos", value="\n".join(result["skipped"][:10])[:1000], inline=False)
     if result["errors"]:
         embed.add_field(name="Errores", value="\n".join(result["errors"][:10])[:1000], inline=False)
-    embed.set_footer(text="Accion ejecutada desde el panel AFK.")
     return embed
 
 
