@@ -2585,13 +2585,30 @@ async def afks(
         await interaction.response.send_message("Aun no hay cierre semanal guardado para comparar.", ephemeral=True)
         return
 
-    candidates, summary = build_inactive_candidates(max_puntos, limit)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    members = await get_non_bot_guild_members(interaction.guild)
+    candidates, summary = build_inactive_candidates(members, max_puntos, limit)
     embed = build_inactive_review_embed(candidates, summary, max_puntos, limit)
     view = InactiveReviewView(candidates, max_puntos) if candidates else None
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-def build_inactive_candidates(max_points: int = DEFAULT_INACTIVE_MAX_POINTS, limit: int = 15):
+async def get_non_bot_guild_members(guild: discord.Guild):
+    members_by_id = {
+        member.id: member
+        for member in guild.members
+        if not member.bot
+    }
+    try:
+        async for member in guild.fetch_members(limit=None):
+            if not member.bot:
+                members_by_id[member.id] = member
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    return sorted(members_by_id.values(), key=lambda member: member.display_name.lower())
+
+
+def build_inactive_candidates(members: list[discord.Member], max_points: int = DEFAULT_INACTIVE_MAX_POINTS, limit: int = 15):
     current_source = get_ranking_export_source("actual")
     previous_source = get_ranking_export_source("ultimo_cierre")
     current_rows = {
@@ -2604,15 +2621,17 @@ def build_inactive_candidates(max_points: int = DEFAULT_INACTIVE_MAX_POINTS, lim
     }
 
     candidates = []
-    skipped_new = 0
-    for user_id, current in current_rows.items():
-        if user_id not in previous_rows:
-            skipped_new += 1
-
-    for user_id, previous in previous_rows.items():
+    for member in members:
+        user_id = str(member.id)
+        previous = previous_rows.get(user_id) or {
+            "user_id": user_id,
+            "username": member.display_name,
+            "points": 0,
+            "activity_units": 0,
+        }
         current = current_rows.get(user_id) or {
             "user_id": user_id,
-            "username": previous["username"],
+            "username": member.display_name,
             "points": 0,
             "activity_units": 0,
         }
@@ -2620,7 +2639,7 @@ def build_inactive_candidates(max_points: int = DEFAULT_INACTIVE_MAX_POINTS, lim
             continue
         candidates.append({
             "user_id": user_id,
-            "username": current["username"] or previous["username"],
+            "username": member.display_name or current["username"] or previous["username"],
             "current_points": current["points"],
             "previous_points": previous["points"],
             "current_units": current["activity_units"],
@@ -2642,8 +2661,8 @@ def build_inactive_candidates(max_points: int = DEFAULT_INACTIVE_MAX_POINTS, lim
         "previous_label": previous_source["label"],
         "current_total": len(current_rows),
         "previous_total": len(previous_rows),
+        "member_total": len(members),
         "candidate_total": len(candidates),
-        "skipped_new": skipped_new,
     }
     return limited, summary
 
@@ -2675,6 +2694,7 @@ def build_inactive_review_embed(candidates: list[dict], summary: dict, max_point
     )
     embed.add_field(name="Ranking actual", value=str(summary["current_total"]), inline=True)
     embed.add_field(name="Ranking anterior", value=str(summary["previous_total"]), inline=True)
+    embed.add_field(name="Miembros Discord", value=str(summary["member_total"]), inline=True)
     embed.add_field(name="Candidatos", value=str(summary["candidate_total"]), inline=True)
 
     if not candidates:
@@ -2689,12 +2709,11 @@ def build_inactive_review_embed(candidates: list[dict], summary: dict, max_point
     if summary["candidate_total"] > limit:
         lines.append(f"... y {summary['candidate_total'] - limit} mas")
     embed.add_field(name="Mas inactivos", value="\n".join(lines)[:1000], inline=False)
-    if summary["skipped_new"]:
-        embed.add_field(
-            name="No evaluados como 2 semanas",
-            value=f"{summary['skipped_new']} scouts aparecen solo en el ranking actual.",
-            inline=False,
-        )
+    embed.add_field(
+        name="Alcance",
+        value="Se evaluan todos los miembros actuales del Discord; si no aparecen en un ranking cuentan como 0 pts.",
+        inline=False,
+    )
     embed.set_footer(text="El selector de kick aparece solo sobre los candidatos mostrados.")
     return embed
 
