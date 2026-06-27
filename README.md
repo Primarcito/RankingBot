@@ -43,6 +43,7 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 | `/admin dashboard_scouts` | Publica o actualiza dashboard de scouts | Admin |
 | `/admin info_ranking` | Publica la guia y ranking general | Admin |
 | `/admin prio minimo fuente` | Panel semanal para exportar y sincronizar rol prio | Admin |
+| `/admin afks max_puntos limite` | Revisa AFKs con 0 puntos comparando ranking actual y ultimo cierre; el kick requiere rol GM | Admin/GM |
 | `/admin puntos fuente` | Panel para sumar o restar puntos en masa por actividad, en ranking actual o ultimo cierre | Admin |
 | `/admin modificar_puntos fuente` | Suma o resta actividades a un scout, en ranking actual o ultimo cierre | Admin |
 | `/admin registrar_alt` | Asocia nombres alternos a un scout | Admin |

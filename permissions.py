@@ -1,4 +1,4 @@
-from config import ADMIN_PERMISSION, ADMIN_ROLE_IDS, REVIEWER_ROLE_IDS
+from config import ADMIN_PERMISSION, ADMIN_ROLE_IDS, GM_ROLE_IDS, REVIEWER_ROLE_IDS
 
 
 def has_any_role(member, role_ids):
@@ -23,3 +23,7 @@ def can_review_evidence(interaction):
 
 def can_review_member(member):
     return is_admin_member(member) or has_any_role(member, REVIEWER_ROLE_IDS)
+
+
+def is_gm_member(member):
+    return has_any_role(member, GM_ROLE_IDS)

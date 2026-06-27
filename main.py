@@ -51,7 +51,7 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_RANKING, COLO
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
     AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC, \
-    DEFAULT_PRIORITY_MIN_POINTS, PRIORITY_PROTECTED_ROLE_IDS, PRIORITY_ROLE_ID
+    DEFAULT_PRIORITY_MIN_POINTS, GM_ROLE_IDS, PRIORITY_PROTECTED_ROLE_IDS, PRIORITY_ROLE_ID
 from views import (
     DashboardView,
     EvidenceAuthorConfirmView,
@@ -63,7 +63,7 @@ from views import (
     refresh_review_participants,
 )
 from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed, build_priority_caps_embed
-from permissions import can_review_member, is_admin
+from permissions import can_review_member, is_admin, is_gm_member
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
 import mapping_analysis
@@ -91,6 +91,7 @@ MAPEO_MAX_WEEKLY_UNITS = 30
 MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
+DEFAULT_INACTIVE_MAX_POINTS = 0
 
 # Opciones de actividad para los slash commands
 ACT_CHOICES = [
@@ -2554,6 +2555,321 @@ def safe_export_date(value):
     text = str(value)
     match = re.match(r"(\d{4}-\d{2}-\d{2})", text)
     return match.group(1) if match else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+@admin_group.command(name="afks", description="Revisa AFKs por 2 semanas usando ranking actual y ultimo cierre")
+@app_commands.describe(
+    max_puntos="Maximo de puntos permitido en cada semana para marcar AFK. Default: 0",
+    limite="Cantidad maxima de candidatos a mostrar. Maximo: 25",
+)
+async def afks(
+    interaction: discord.Interaction,
+    max_puntos: int = DEFAULT_INACTIVE_MAX_POINTS,
+    limite: int = 15,
+):
+    if not (is_admin(interaction) or is_gm_member(interaction.user)):
+        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+        return
+
+    if not interaction.guild:
+        await interaction.response.send_message("Este comando solo funciona dentro del servidor.", ephemeral=True)
+        return
+
+    if max_puntos < 0:
+        await interaction.response.send_message("El maximo de puntos no puede ser negativo.", ephemeral=True)
+        return
+
+    limit = min(max(1, int(limite or 15)), 25)
+    previous_source = get_ranking_export_source("ultimo_cierre")
+    if not previous_source["snapshot"]:
+        await interaction.response.send_message("Aun no hay cierre semanal guardado para comparar.", ephemeral=True)
+        return
+
+    candidates, summary = build_inactive_candidates(max_puntos, limit)
+    embed = build_inactive_review_embed(candidates, summary, max_puntos, limit)
+    view = InactiveReviewView(candidates, max_puntos) if candidates else None
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+def build_inactive_candidates(max_points: int = DEFAULT_INACTIVE_MAX_POINTS, limit: int = 15):
+    current_source = get_ranking_export_source("actual")
+    previous_source = get_ranking_export_source("ultimo_cierre")
+    current_rows = {
+        str(row[0]): ranking_export_row_to_inactive_entry(row)
+        for row in get_ranking_export_rows(current_source)
+    }
+    previous_rows = {
+        str(row[0]): ranking_export_row_to_inactive_entry(row)
+        for row in get_ranking_export_rows(previous_source)
+    }
+
+    candidates = []
+    skipped_new = 0
+    for user_id, current in current_rows.items():
+        if user_id not in previous_rows:
+            skipped_new += 1
+
+    for user_id, previous in previous_rows.items():
+        current = current_rows.get(user_id) or {
+            "user_id": user_id,
+            "username": previous["username"],
+            "points": 0,
+            "activity_units": 0,
+        }
+        if current["points"] > max_points or previous["points"] > max_points:
+            continue
+        candidates.append({
+            "user_id": user_id,
+            "username": current["username"] or previous["username"],
+            "current_points": current["points"],
+            "previous_points": previous["points"],
+            "current_units": current["activity_units"],
+            "previous_units": previous["activity_units"],
+            "two_week_points": current["points"] + previous["points"],
+        })
+
+    candidates.sort(
+        key=lambda item: (
+            item["two_week_points"],
+            item["current_points"],
+            item["previous_points"],
+            str(item["username"]).lower(),
+        )
+    )
+    limited = candidates[:limit]
+    summary = {
+        "current_label": current_source["label"],
+        "previous_label": previous_source["label"],
+        "current_total": len(current_rows),
+        "previous_total": len(previous_rows),
+        "candidate_total": len(candidates),
+        "skipped_new": skipped_new,
+    }
+    return limited, summary
+
+
+def ranking_export_row_to_inactive_entry(row):
+    activity_units = 0
+    for value in row[2:7]:
+        try:
+            activity_units += int(value or 0)
+        except (TypeError, ValueError):
+            continue
+    return {
+        "user_id": str(row[0]),
+        "username": str(row[1] or row[0]),
+        "points": int(row[7] or 0),
+        "activity_units": activity_units,
+    }
+
+
+def build_inactive_review_embed(candidates: list[dict], summary: dict, max_points: int, limit: int):
+    embed = discord.Embed(
+        title="Revision de AFKs por 2 semanas",
+        description=(
+            f"Actual: **{summary['current_label']}**\n"
+            f"Semana anterior: **{summary['previous_label']}**\n"
+            f"Criterio: **{max_points} pts o menos** en ambos rankings."
+        ),
+        color=COLOR_WARNING if candidates else COLOR_SUCCESS,
+    )
+    embed.add_field(name="Ranking actual", value=str(summary["current_total"]), inline=True)
+    embed.add_field(name="Ranking anterior", value=str(summary["previous_total"]), inline=True)
+    embed.add_field(name="Candidatos", value=str(summary["candidate_total"]), inline=True)
+
+    if not candidates:
+        embed.add_field(
+            name="Resultado",
+            value="No encontre scouts con puntos bajos en ambas semanas.",
+            inline=False,
+        )
+        return embed
+
+    lines = [format_inactive_candidate_line(index, item) for index, item in enumerate(candidates, start=1)]
+    if summary["candidate_total"] > limit:
+        lines.append(f"... y {summary['candidate_total'] - limit} mas")
+    embed.add_field(name="Mas inactivos", value="\n".join(lines)[:1000], inline=False)
+    if summary["skipped_new"]:
+        embed.add_field(
+            name="No evaluados como 2 semanas",
+            value=f"{summary['skipped_new']} scouts aparecen solo en el ranking actual.",
+            inline=False,
+        )
+    embed.set_footer(text="El selector de kick aparece solo sobre los candidatos mostrados.")
+    return embed
+
+
+def format_inactive_candidate_line(index: int, item: dict):
+    return (
+        f"`#{index}` <@{item['user_id']}> - **{item['two_week_points']} pts** "
+        f"(actual {item['current_points']} | anterior {item['previous_points']})"
+    )
+
+
+class InactiveReviewView(SafeView):
+    def __init__(self, candidates: list[dict], max_points: int):
+        super().__init__(timeout=600)
+        self.add_item(InactiveKickSelect(candidates, max_points))
+
+
+class InactiveKickSelect(discord.ui.Select):
+    def __init__(self, candidates: list[dict], max_points: int):
+        self.candidates_by_id = {str(item["user_id"]): item for item in candidates[:25]}
+        self.max_points = max_points
+        options = [
+            discord.SelectOption(
+                label=select_option_label(item),
+                value=str(item["user_id"]),
+                description=(
+                    f"Actual {item['current_points']} pts | "
+                    f"Anterior {item['previous_points']} pts"
+                )[:100],
+            )
+            for item in candidates[:25]
+        ]
+        super().__init__(
+            placeholder="Selecciona scouts para kick",
+            min_values=1,
+            max_values=max(1, len(options)),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message(
+                f"Solo el rol GM <@&{next(iter(GM_ROLE_IDS))}> puede usar esta opcion.",
+                ephemeral=True,
+            )
+            return
+        selected = [
+            self.candidates_by_id[user_id]
+            for user_id in self.values
+            if user_id in self.candidates_by_id
+        ]
+        if not selected:
+            await interaction.response.send_message("No encontre candidatos seleccionados.", ephemeral=True)
+            return
+        await interaction.response.send_modal(InactiveKickConfirmModal(selected, self.max_points))
+
+
+def select_option_label(item: dict):
+    username = str(item.get("username") or item["user_id"])
+    text = f"{username} ({item['two_week_points']} pts)"
+    return text[:100]
+
+
+class InactiveKickConfirmModal(SafeModal):
+    confirmation = discord.ui.TextInput(label="Confirmacion", placeholder="Escribe KICK", max_length=8)
+
+    def __init__(self, candidates: list[dict], max_points: int):
+        super().__init__(title=f"Kick AFK x{len(candidates)}")
+        self.candidates = candidates
+        self.max_points = max_points
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Solo el rol GM puede confirmar kicks.", ephemeral=True)
+            return
+        if str(self.confirmation.value).strip().upper() != "KICK":
+            await interaction.response.send_message("Operacion cancelada. Debes escribir `KICK`.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+
+        bot_member = interaction.guild.me
+        if not bot_member or not bot_member.guild_permissions.kick_members:
+            await interaction.response.send_message("No tengo permiso `Kick Members` en este servidor.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await kick_inactive_candidates(
+            interaction.guild,
+            interaction.user,
+            bot_member,
+            self.candidates,
+            self.max_points,
+        )
+        await interaction.followup.send(embed=build_inactive_kick_result_embed(result), ephemeral=True)
+
+
+async def kick_inactive_candidates(
+    guild: discord.Guild,
+    actor: discord.Member,
+    bot_member: discord.Member,
+    candidates: list[dict],
+    max_points: int,
+):
+    result = {
+        "kicked": [],
+        "missing": [],
+        "skipped": [],
+        "errors": [],
+    }
+    reason = f"RankingBot AFK 2 semanas: <= {max_points} pts en ranking actual y anterior"
+
+    for item in candidates:
+        user_id = str(item["user_id"])
+        if not is_discord_user_id(user_id):
+            result["skipped"].append(f"`{item['username']}`: ID no valido")
+            continue
+        member = await resolve_guild_member(guild, user_id)
+        if not member:
+            result["missing"].append(user_id)
+            continue
+        if member.bot:
+            result["skipped"].append(f"{member.mention}: es bot")
+            continue
+        if member.id == actor.id:
+            result["skipped"].append(f"{member.mention}: no puedes kickearte a ti mismo")
+            continue
+        if is_gm_member(member) or getattr(member.guild_permissions, "administrator", False):
+            result["skipped"].append(f"{member.mention}: GM/admin protegido")
+            continue
+        if member.top_role >= bot_member.top_role:
+            result["errors"].append(f"No puedo kickear a {member.display_name}: rol igual o superior al mio")
+            continue
+        try:
+            await member.kick(reason=reason)
+            result["kicked"].append(member)
+        except discord.HTTPException as err:
+            result["errors"].append(f"No pude kickear a {member.display_name}: {err}")
+
+    return result
+
+
+def build_inactive_kick_result_embed(result: dict):
+    embed = discord.Embed(
+        title="Kick AFK aplicado",
+        color=COLOR_SUCCESS if result["kicked"] and not result["errors"] else COLOR_WARNING,
+    )
+    embed.add_field(name="Kickeados", value=str(len(result["kicked"])), inline=True)
+    embed.add_field(name="No encontrados", value=str(len(result["missing"])), inline=True)
+    embed.add_field(name="Omitidos", value=str(len(result["skipped"])), inline=True)
+    if result["kicked"]:
+        embed.add_field(
+            name="Kickeados",
+            value=format_member_lines(result["kicked"]),
+            inline=False,
+        )
+    if result["missing"]:
+        embed.add_field(
+            name="No encontrados",
+            value=", ".join(f"`{user_id}`" for user_id in result["missing"][:20]),
+            inline=False,
+        )
+    if result["skipped"]:
+        embed.add_field(name="Omitidos", value="\n".join(result["skipped"][:10])[:1000], inline=False)
+    if result["errors"]:
+        embed.add_field(name="Errores", value="\n".join(result["errors"][:10])[:1000], inline=False)
+    return embed
+
+
+def format_member_lines(members: list[discord.Member]):
+    lines = [f"{member.mention} - `{member.display_name}`" for member in members[:20]]
+    if len(members) > 20:
+        lines.append(f"... y {len(members) - 20} mas")
+    return "\n".join(lines)
 
 
 def build_xlsx_bytes(rows: list[list]):
