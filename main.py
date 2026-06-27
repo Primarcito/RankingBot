@@ -2681,16 +2681,16 @@ def build_inactive_review_embed(
     discarded_count: int = 0,
 ):
     embed = discord.Embed(
-        title="AFKs",
+        title="Revision AFK",
         description=(
-            f"Criterio: **{max_points} pts o menos** en ranking actual y cierre anterior"
+            f"Criterio activo: **{max_points} pts o menos** en ranking actual y cierre anterior."
         ),
         color=COLOR_WARNING if candidates else COLOR_SUCCESS,
     )
-    embed.add_field(name="Detectados", value=str(summary["candidate_total"]), inline=True)
-    embed.add_field(name="En revision", value=str(len(candidates)), inline=True)
+    embed.add_field(name="Detectados", value=f"**{summary['candidate_total']}**", inline=True)
+    embed.add_field(name="En revision", value=f"**{len(candidates)}**", inline=True)
     if discarded_count:
-        embed.add_field(name="Descartados", value=str(discarded_count), inline=True)
+        embed.add_field(name="Descartados", value=f"**{discarded_count}**", inline=True)
 
     if not candidates:
         embed.add_field(
@@ -2700,22 +2700,25 @@ def build_inactive_review_embed(
         )
         return embed
 
-    table = build_inactive_candidates_table(candidates)
-    embed.add_field(name="Candidatos", value=f"```text\n{table}\n```", inline=False)
-    embed.set_footer(text="Maximo 25 candidatos. Cambiar puntos recalcula el reporte.")
+    candidate_lines = build_inactive_candidate_lines(candidates)
+    for chunk_index, start in enumerate(range(0, len(candidate_lines), 12), start=1):
+        chunk = candidate_lines[start:start + 12]
+        field_name = "Candidatos" if chunk_index == 1 else f"Candidatos {chunk_index}"
+        embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+    embed.set_footer(text="Descarta falsos positivos; luego kickea los restantes.")
     return embed
 
 
-def build_inactive_candidates_table(candidates: list[dict]):
-    lines = ["#  Nick                    Pts"]
+def build_inactive_candidate_lines(candidates: list[dict]):
+    lines = []
     for index, item in enumerate(candidates[:INACTIVE_REPORT_LIMIT], start=1):
         lines.append(format_inactive_candidate_line(index, item))
-    return "\n".join(lines)
+    return lines
 
 
 def format_inactive_candidate_line(index: int, item: dict):
-    username = clean_inactive_table_name(item.get("username") or item["user_id"], 22)
-    return f"{index:>2} {username:<22} {item['two_week_points']:>3}"
+    username = clean_inactive_table_name(item.get("username") or item["user_id"], 28)
+    return f"`{index:02}` **{username}** - `{item['two_week_points']} pts`"
 
 
 def clean_inactive_table_name(value, limit: int):
@@ -2741,6 +2744,7 @@ class InactiveReviewView(SafeView):
         self.clear_items()
         self.add_item(ChangeInactivePointsButton(self))
         if self.candidates:
+            self.add_item(KickInactiveButton(self))
             self.add_item(InactiveDiscardSelect(self))
 
     def current_embed(self):
@@ -2766,6 +2770,25 @@ class ChangeInactivePointsButton(discord.ui.Button):
             await interaction.response.send_message("No tienes permiso para cambiar este reporte.", ephemeral=True)
             return
         await interaction.response.send_modal(InactivePointsModal(self.review_view))
+
+
+class KickInactiveButton(discord.ui.Button):
+    def __init__(self, review_view: InactiveReviewView):
+        super().__init__(
+            label="Kickear restantes",
+            style=discord.ButtonStyle.danger,
+            row=0,
+        )
+        self.review_view = review_view
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Solo el rol GM puede kickear AFKs.", ephemeral=True)
+            return
+        if not self.review_view.candidates:
+            await interaction.response.send_message("No quedan candidatos para kickear.", ephemeral=True)
+            return
+        await interaction.response.send_modal(InactiveKickConfirmModal(self.review_view))
 
 
 class InactiveDiscardSelect(discord.ui.Select):
@@ -2812,6 +2835,49 @@ class InactiveDiscardSelect(discord.ui.Select):
             embed=self.review_view.current_embed(),
             view=self.review_view,
         )
+
+
+class InactiveKickConfirmModal(SafeModal):
+    confirmation = discord.ui.TextInput(label="Confirmacion", placeholder="Escribe KICK", max_length=8)
+
+    def __init__(self, review_view: InactiveReviewView):
+        super().__init__(title=f"Kickear {len(review_view.candidates)} AFKs")
+        self.review_view = review_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Solo el rol GM puede confirmar kicks.", ephemeral=True)
+            return
+        if str(self.confirmation.value).strip().upper() != "KICK":
+            await interaction.response.send_message("Operacion cancelada. Debes escribir `KICK`.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+
+        bot_member = interaction.guild.me
+        if not bot_member or not bot_member.guild_permissions.kick_members:
+            await interaction.response.send_message("No tengo permiso `Kick Members` en este servidor.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True)
+        result = await kick_inactive_candidates(
+            interaction.guild,
+            interaction.user,
+            bot_member,
+            list(self.review_view.candidates),
+            self.review_view.max_points,
+        )
+        kicked_ids = {str(member.id) for member in result["kicked"]}
+        if kicked_ids:
+            self.review_view.candidates = [
+                item
+                for item in self.review_view.candidates
+                if str(item["user_id"]) not in kicked_ids
+            ]
+            self.review_view.refresh_items()
+
+        await interaction.followup.send(embed=build_inactive_kick_result_embed(result), ephemeral=False)
 
 
 class InactivePointsModal(SafeModal):
@@ -2867,6 +2933,89 @@ def select_option_label(item: dict, index: int):
     username = clean_inactive_table_name(item.get("username") or item["user_id"], 75)
     text = f"#{index} {username} ({item['two_week_points']} pts)"
     return text[:100]
+
+
+async def kick_inactive_candidates(
+    guild: discord.Guild,
+    actor: discord.Member,
+    bot_member: discord.Member,
+    candidates: list[dict],
+    max_points: int,
+):
+    result = {
+        "kicked": [],
+        "missing": [],
+        "skipped": [],
+        "errors": [],
+    }
+    reason = f"RankingBot AFK 2 semanas: <= {max_points} pts en ranking actual y cierre anterior"
+
+    for item in candidates:
+        user_id = str(item["user_id"])
+        if not is_discord_user_id(user_id):
+            result["skipped"].append(f"{item['username']}: ID no valido")
+            continue
+        member = await resolve_guild_member(guild, user_id)
+        if not member:
+            result["missing"].append(item)
+            continue
+        if member.bot:
+            result["skipped"].append(f"{member.display_name}: es bot")
+            continue
+        if member.id == actor.id:
+            result["skipped"].append(f"{member.display_name}: no puedes kickearte a ti mismo")
+            continue
+        if is_gm_member(member) or getattr(member.guild_permissions, "administrator", False):
+            result["skipped"].append(f"{member.display_name}: GM/admin protegido")
+            continue
+        if member.top_role >= bot_member.top_role:
+            result["errors"].append(f"No puedo kickear a {member.display_name}: rol igual o superior al mio")
+            continue
+        try:
+            await member.kick(reason=reason)
+            result["kicked"].append(member)
+        except discord.HTTPException as err:
+            result["errors"].append(f"No pude kickear a {member.display_name}: {err}")
+
+    return result
+
+
+def build_inactive_kick_result_embed(result: dict):
+    embed = discord.Embed(
+        title="Miembros kickeados",
+        color=COLOR_SUCCESS if result["kicked"] and not result["errors"] else COLOR_WARNING,
+    )
+    embed.add_field(name="Kickeados", value=f"**{len(result['kicked'])}**", inline=True)
+    embed.add_field(name="Omitidos", value=f"**{len(result['skipped'])}**", inline=True)
+    embed.add_field(name="Errores", value=f"**{len(result['errors'])}**", inline=True)
+    if result["kicked"]:
+        embed.add_field(
+            name="Lista",
+            value=format_kicked_member_lines(result["kicked"]),
+            inline=False,
+        )
+    if result["missing"]:
+        embed.add_field(
+            name="No encontrados",
+            value=", ".join(clean_inactive_table_name(item.get("username") or item["user_id"], 24) for item in result["missing"][:20]),
+            inline=False,
+        )
+    if result["skipped"]:
+        embed.add_field(name="Omitidos", value="\n".join(result["skipped"][:10])[:1000], inline=False)
+    if result["errors"]:
+        embed.add_field(name="Errores", value="\n".join(result["errors"][:10])[:1000], inline=False)
+    embed.set_footer(text="Accion ejecutada desde el panel AFK.")
+    return embed
+
+
+def format_kicked_member_lines(members: list[discord.Member]):
+    lines = [
+        f"`{index:02}` **{clean_inactive_table_name(member.display_name, 28)}**"
+        for index, member in enumerate(members[:20], start=1)
+    ]
+    if len(members) > 20:
+        lines.append(f"... y {len(members) - 20} mas")
+    return "\n".join(lines)
 
 
 def build_xlsx_bytes(rows: list[list]):
