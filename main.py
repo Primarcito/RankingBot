@@ -7,6 +7,7 @@ import re
 import unicodedata
 import zipfile
 from datetime import datetime, timedelta, timezone
+from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 import discord
 from discord import app_commands
@@ -32,6 +33,7 @@ from database import (
     get_nivel,
     get_pending_evidence_message_ids,
     get_scout_aliases,
+    find_scout_alias,
     get_ranking_snapshot,
     get_ranking_snapshot_for_time,
     get_ranking_snapshot_rows,
@@ -603,6 +605,58 @@ def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_pe
         calculated.append(item)
     return calculated
 
+def combine_scouteo_records(records: list[dict]):
+    if not records:
+        return {
+            "name": "",
+            "hours": 0,
+            "minutes": 0,
+            "maps": 0,
+            "hour_points": 0,
+            "map_points": 0,
+            "total": 0,
+            "source_names": [],
+        }
+
+    total_minutes = sum((record["hours"] * 60) + record["minutes"] for record in records)
+    source_names = [record["name"] for record in records]
+    return {
+        "name": records[0]["name"],
+        "hours": total_minutes // 60,
+        "minutes": total_minutes % 60,
+        "maps": sum(record["maps"] for record in records),
+        "hour_points": sum(record["hour_points"] for record in records),
+        "map_points": sum(record["map_points"] for record in records),
+        "total": sum(record["total"] for record in records),
+        "source_names": source_names,
+    }
+
+def format_unresolved_scouteo_records(records: list[dict], unit_points: int):
+    lines = []
+    for record in records[:20]:
+        lines.append(
+            f"`{record['name']}` - `{record['total'] * unit_points}` pts "
+            f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas)"
+        )
+    if len(records) > 20:
+        lines.append(f"... y {len(records) - 20} mas")
+    return "\n".join(lines)
+
+def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, unit_points: int):
+    source_names = record.get("source_names") or [record["name"]]
+    source_text = ""
+    if len(source_names) > 1:
+        source_text = f"; nombres: {', '.join(source_names[:4])}"
+        if len(source_names) > 4:
+            source_text += f" +{len(source_names) - 4}"
+
+    return (
+        f"<@{user_id}> - `{cantidad * unit_points}` pts "
+        f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas; "
+        f"{record['hour_points']} por horas + {record['map_points']} por mapas"
+        f"{source_text})"
+    )
+
 def extract_scouteo_summary_name(text: str):
     candidates = [
         token.strip("._-")
@@ -643,25 +697,43 @@ async def create_scouteo_count_review(
     target_snapshot_id: int | None = None,
     target_label: str = "Ranking actual",
 ):
-    participant_rows = []
-    unresolved_names = []
+    participant_rows_by_user = {}
+    unresolved_records = []
     suggested_participants = []
-    excluded_user_ids = set()
     for record in records:
         if record["total"] <= 0:
             continue
         participants, unresolved, suggestions = await participant_tools.resolve_names(
             message.guild,
             [record["name"]],
-            excluded_user_ids,
         )
         if participants:
             user_id, display_name = participants[0]
-            participant_rows.append((user_id, display_name, record["total"], record))
-            excluded_user_ids.add(str(user_id))
+            user_id = str(user_id)
+            if user_id not in participant_rows_by_user:
+                participant_rows_by_user[user_id] = {
+                    "user_id": user_id,
+                    "display_name": display_name,
+                    "cantidad": 0,
+                    "records": [],
+                }
+            participant_rows_by_user[user_id]["display_name"] = display_name
+            participant_rows_by_user[user_id]["cantidad"] += record["total"]
+            participant_rows_by_user[user_id]["records"].append(record)
         else:
-            unresolved_names.extend(unresolved)
+            unresolved_records.extend(dict(record, name=name) for name in unresolved)
             suggested_participants.extend(suggestions)
+
+    participant_rows = [
+        (
+            item["user_id"],
+            item["display_name"],
+            item["cantidad"],
+            combine_scouteo_records(item["records"]),
+        )
+        for item in participant_rows_by_user.values()
+    ]
+    unresolved_names = [record["name"] for record in unresolved_records]
 
     if not participant_rows:
         print("[SCOUTEO SUMMARY] ignorado: sin participantes con puntos calculados")
@@ -696,18 +768,14 @@ async def create_scouteo_count_review(
         )
     )
     participant_text = "\n".join(
-        (
-            f"<@{user_id}> - `{cantidad * pts}` pts "
-            f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas; "
-            f"{record['hour_points']} por horas + {record['map_points']} por mapas)"
-        )
+        format_scouteo_participant_line(user_id, cantidad, record, pts)
         for user_id, _, cantidad, record in participant_rows[:20]
     )
     embed.add_field(name="Participantes", value=participant_text[:1000], inline=False)
-    if unresolved_names:
+    if unresolved_records:
         embed.add_field(
             name="No resueltos",
-            value=", ".join(f"`{name}`" for name in unresolved_names)[:1000],
+            value=format_unresolved_scouteo_records(unresolved_records, pts)[:1000],
             inline=False
         )
     if suggested_participants:
@@ -2388,59 +2456,433 @@ def build_bulk_points_result_embed(
     return embed
 
 
-@admin_group.command(name="registrar_alt", description="Asocia uno o varios nombres alternos a un scout")
-@app_commands.describe(usuario="Scout principal que recibira los puntos", nombres="Ej: +littleponny, +otroNombre")
-async def registrar_alt(interaction: discord.Interaction, usuario: discord.Member, nombres: str):
+@admin_group.command(name="padron", description="Panel para administrar el padron de aliases de scouts")
+async def padron(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
-    aliases = participant_tools.extract_manual_names(nombres)
-    if not aliases:
-        await interaction.response.send_message("Escribe al menos un nombre valido.", ephemeral=True)
-        return
-
-    saved = []
-    for alias in aliases:
-        if add_scout_alias(str(usuario.id), usuario.display_name, alias):
-            saved.append(alias)
-
-    embed = discord.Embed(
-        title="Aliases registrados",
-        description=(
-            f"Main: {usuario.mention}\n"
-            f"Nombres: {', '.join(f'`+{alias}`' for alias in saved)}"
-        ),
-        color=COLOR_SUCCESS,
+    await interaction.response.send_message(
+        embed=build_alias_pattern_dashboard_embed(),
+        view=AliasPatternDashboardView(),
+        ephemeral=True,
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@admin_group.command(name="quitar_alt", description="Quita un nombre alterno del ranking")
-@app_commands.describe(nombre="Nombre alterno a quitar, con o sin +")
-async def quitar_alt(interaction: discord.Interaction, nombre: str):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
+def build_alias_pattern_dashboard_embed():
+    alias_rows = get_scout_aliases()
+    scouts = get_all_scouts()
+    embed = discord.Embed(
+        title="Panel de padron",
+        description=(
+            "Administra nombres alternos de scouts desde una plantilla XLSX.\n"
+            "La columna `aliases` acepta varios nombres separados por comas, espacios o saltos de linea."
+        ),
+        color=COLOR_PANEL,
+    )
+    embed.add_field(name="Scouts en ranking", value=str(len(scouts)), inline=True)
+    embed.add_field(name="Aliases registrados", value=str(len(alias_rows)), inline=True)
+    embed.add_field(name="Formato", value="`user_id | username | aliases`", inline=True)
+    if alias_rows:
+        preview = [
+            f"<@{user_id}> - `{alias}`"
+            for user_id, _, alias in alias_rows[:8]
+        ]
+        if len(alias_rows) > 8:
+            preview.append(f"... y {len(alias_rows) - 8} mas")
+        embed.add_field(name="Vista rapida", value="\n".join(preview), inline=False)
+    return embed
 
-    removed = remove_scout_alias(nombre)
-    message = f"`+{nombre.lstrip('+')}` eliminado." if removed else "No encontre ese alias."
-    await interaction.response.send_message(message, ephemeral=True)
+
+class AliasPatternDashboardView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=build_alias_pattern_dashboard_embed(), view=self)
+
+    @discord.ui.button(label="Exportar XLSX", style=discord.ButtonStyle.primary)
+    async def export_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            content="Edita la columna `aliases` y vuelve a importarlo desde este panel.",
+            file=build_alias_pattern_xlsx_file(),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Importar XLSX", style=discord.ButtonStyle.success)
+    async def import_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        if not interaction.channel:
+            await interaction.response.send_message("No encontre el canal para recibir el archivo.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "Sube el `.xlsx` en este canal durante los proximos 3 minutos. "
+            "Debe tener columnas `user_id`, `username` y `aliases`.",
+            ephemeral=True,
+        )
+
+        def check(message: discord.Message):
+            if message.author.id != interaction.user.id or message.channel.id != interaction.channel.id:
+                return False
+            return any(attachment.filename.lower().endswith(".xlsx") for attachment in message.attachments)
+
+        try:
+            message = await bot.wait_for("message", timeout=180, check=check)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("No recibi ningun `.xlsx` a tiempo.", ephemeral=True)
+            return
+
+        attachment = next(
+            item for item in message.attachments
+            if item.filename.lower().endswith(".xlsx")
+        )
+        await interaction.followup.send("Leyendo XLSX y registrando aliases...", ephemeral=True)
+        try:
+            content = await attachment.read(use_cached=True)
+            rows = parse_alias_pattern_xlsx(content)
+            result = await import_alias_pattern_rows(interaction.guild, rows)
+        except Exception as err:
+            traceback.print_exception(type(err), err, err.__traceback__)
+            await interaction.followup.send(f"No pude importar el XLSX: `{err}`", ephemeral=True)
+            return
+
+        await interaction.followup.send(embed=build_alias_import_result_embed(result), ephemeral=True)
+
+    @discord.ui.button(label="Agregar manual", style=discord.ButtonStyle.secondary)
+    async def add_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AliasManualAddModal())
+
+    @discord.ui.button(label="Quitar alias", style=discord.ButtonStyle.danger)
+    async def remove_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AliasManualRemoveModal())
 
 
-@admin_group.command(name="ver_alts", description="Muestra los nombres alternos asociados a un scout")
-async def ver_alts(interaction: discord.Interaction, usuario: discord.Member):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
-        return
+class AliasManualAddModal(SafeModal):
+    usuario = discord.ui.TextInput(
+        label="Usuario",
+        placeholder="Mencion, ID o nombre exacto del scout",
+        max_length=120,
+    )
+    aliases = discord.ui.TextInput(
+        label="Aliases",
+        placeholder="z5655, zaitxs2, otroNombre",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
 
-    rows = get_scout_aliases(str(usuario.id))
+    def __init__(self):
+        super().__init__(title="Agregar aliases")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        target = await resolve_alias_target(interaction.guild, str(self.usuario.value), "")
+        aliases = participant_tools.extract_manual_names(str(self.aliases.value))
+        result = empty_alias_import_result()
+        if not target:
+            result["unresolved"].append(str(self.usuario.value))
+        elif not aliases:
+            result["empty"].append(target["username"])
+        else:
+            save_aliases_for_target(target, aliases, result)
+
+        await interaction.response.send_message(embed=build_alias_import_result_embed(result), ephemeral=True)
+
+
+class AliasManualRemoveModal(SafeModal):
+    aliases = discord.ui.TextInput(
+        label="Aliases a quitar",
+        placeholder="z5655, otroNombre",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    def __init__(self):
+        super().__init__(title="Quitar aliases")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+
+        removed = []
+        missing = []
+        for alias in participant_tools.extract_manual_names(str(self.aliases.value)):
+            if remove_scout_alias(alias):
+                removed.append(alias)
+            else:
+                missing.append(alias)
+
+        embed = discord.Embed(
+            title="Aliases quitados" if removed else "No encontre aliases",
+            color=COLOR_SUCCESS if removed else COLOR_WARNING,
+        )
+        if removed:
+            embed.add_field(name="Quitados", value=", ".join(f"`+{alias}`" for alias in removed[:30])[:1000], inline=False)
+        if missing:
+            embed.add_field(name="No encontrados", value=", ".join(f"`+{alias}`" for alias in missing[:30])[:1000], inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+def build_alias_pattern_xlsx_file():
+    rows = [["user_id", "username", "aliases"]]
+    aliases_by_user = {}
+    usernames_by_user = {}
+    for user_id, username, alias in get_scout_aliases():
+        user_id = str(user_id)
+        aliases_by_user.setdefault(user_id, []).append(alias)
+        usernames_by_user[user_id] = username
+
+    scout_rows = {str(row[0]): row[1] for row in get_all_scouts()}
+    for user_id in sorted(set(scout_rows) | set(aliases_by_user), key=lambda item: (scout_rows.get(item) or usernames_by_user.get(item) or item).lower()):
+        rows.append([
+            user_id,
+            scout_rows.get(user_id) or usernames_by_user.get(user_id) or "",
+            ", ".join(aliases_by_user.get(user_id, [])),
+        ])
+
+    filename = f"padron_aliases_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return discord.File(fp=io.BytesIO(build_xlsx_bytes(rows, sheet_name="Padron")), filename=filename)
+
+
+def parse_alias_pattern_xlsx(content: bytes):
+    rows = read_xlsx_rows(content)
     if not rows:
-        await interaction.response.send_message(f"{usuario.mention} no tiene aliases registrados.", ephemeral=True)
-        return
+        return []
 
-    aliases = ", ".join(f"`+{alias}`" for _, _, alias in rows)
-    await interaction.response.send_message(f"Aliases de {usuario.mention}: {aliases}", ephemeral=True)
+    header = [normalize_alias_header(cell) for cell in rows[0]]
+    indexes = {
+        "user_id": find_header_index(header, {"user_id", "userid", "discord_id", "discordid", "id"}),
+        "username": find_header_index(header, {"username", "usuario", "scout", "nombre", "name"}),
+        "aliases": find_header_index(header, {"aliases", "alts", "alt", "padron", "patrones", "patron", "nombres"}),
+    }
+    if indexes["aliases"] is None:
+        raise ValueError("No encontre la columna aliases.")
+    if indexes["user_id"] is None and indexes["username"] is None:
+        raise ValueError("Necesito columna user_id o username.")
+
+    parsed = []
+    for row in rows[1:]:
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+        parsed.append({
+            "user_id": cell_at(row, indexes["user_id"]),
+            "username": cell_at(row, indexes["username"]),
+            "aliases": cell_at(row, indexes["aliases"]),
+        })
+    return parsed
+
+
+def read_xlsx_rows(content: bytes):
+    with zipfile.ZipFile(io.BytesIO(content)) as xlsx:
+        shared_strings = read_xlsx_shared_strings(xlsx)
+        worksheet_name = find_first_worksheet_name(xlsx)
+        xml = xlsx.read(worksheet_name)
+
+    root = ET.fromstring(xml)
+    rows = []
+    for row in root.findall(".//{*}sheetData/{*}row"):
+        values = []
+        next_index = 1
+        for cell in row.findall("{*}c"):
+            ref = cell.attrib.get("r", "")
+            col_index = column_index_from_ref(ref) or next_index
+            while len(values) < col_index - 1:
+                values.append("")
+            values.append(read_xlsx_cell(cell, shared_strings))
+            next_index = col_index + 1
+        rows.append(values)
+    return rows
+
+
+def read_xlsx_shared_strings(xlsx: zipfile.ZipFile):
+    if "xl/sharedStrings.xml" not in xlsx.namelist():
+        return []
+    root = ET.fromstring(xlsx.read("xl/sharedStrings.xml"))
+    strings = []
+    for item in root.findall("{*}si"):
+        strings.append("".join(text.text or "" for text in item.findall(".//{*}t")))
+    return strings
+
+
+def find_first_worksheet_name(xlsx: zipfile.ZipFile):
+    names = sorted(
+        name for name in xlsx.namelist()
+        if re.match(r"xl/worksheets/sheet\d+\.xml$", name)
+    )
+    if not names:
+        raise ValueError("El XLSX no tiene hojas legibles.")
+    return names[0]
+
+
+def read_xlsx_cell(cell, shared_strings: list[str]):
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        return "".join(text.text or "" for text in cell.findall(".//{*}t")).strip()
+
+    value_node = cell.find("{*}v")
+    value = (value_node.text if value_node is not None else "") or ""
+    if cell_type == "s":
+        try:
+            return shared_strings[int(value)].strip()
+        except (ValueError, IndexError):
+            return ""
+    return value.strip()
+
+
+def column_index_from_ref(ref: str):
+    letters = "".join(ch for ch in str(ref or "") if ch.isalpha())
+    if not letters:
+        return None
+    index = 0
+    for char in letters.upper():
+        index = index * 26 + (ord(char) - 64)
+    return index
+
+
+def normalize_alias_header(value):
+    return "".join(ch.lower() for ch in str(value or "") if ch.isalnum() or ch == "_")
+
+
+def find_header_index(header: list[str], names: set[str]):
+    for index, value in enumerate(header):
+        if value in names:
+            return index
+    return None
+
+
+def cell_at(row: list[str], index: int | None):
+    if index is None or index >= len(row):
+        return ""
+    return str(row[index] or "").strip()
+
+
+async def import_alias_pattern_rows(guild: discord.Guild | None, rows: list[dict]):
+    result = empty_alias_import_result()
+    for index, row in enumerate(rows, start=2):
+        aliases = participant_tools.extract_manual_names(row.get("aliases") or "")
+        if not aliases:
+            continue
+        target = await resolve_alias_target(guild, row.get("user_id") or "", row.get("username") or "")
+        if not target:
+            result["unresolved"].append(f"Fila {index}: {row.get('username') or row.get('user_id') or 'sin usuario'}")
+            continue
+        save_aliases_for_target(target, aliases, result)
+    return result
+
+
+def empty_alias_import_result():
+    return {
+        "saved": [],
+        "replaced": [],
+        "unchanged": [],
+        "empty": [],
+        "unresolved": [],
+    }
+
+
+async def resolve_alias_target(guild: discord.Guild | None, user_id_text: str, username_text: str):
+    raw_user = str(user_id_text or "").strip()
+    raw_name = str(username_text or "").strip()
+    id_match = re.search(r"\d{15,25}", raw_user)
+    if id_match:
+        user_id = id_match.group(0)
+        member = await resolve_guild_member(guild, user_id) if guild else None
+        if member:
+            return {"user_id": str(member.id), "username": member.display_name}
+        scout = next((row for row in get_all_scouts() if str(row[0]) == user_id), None)
+        return {"user_id": user_id, "username": scout[1] if scout else (raw_name or user_id)}
+
+    if raw_name and guild:
+        found = await participant_tools.resolve_exact_participant(guild, raw_name, set())
+        if found:
+            return {"user_id": str(found[0]), "username": found[1]}
+
+    if raw_name:
+        target = participant_tools.normalize_name(raw_name)
+        scout = next((row for row in get_all_scouts() if participant_tools.normalize_name(row[1]) == target), None)
+        if scout:
+            return {"user_id": str(scout[0]), "username": scout[1]}
+
+    return None
+
+
+def save_aliases_for_target(target: dict, aliases: list[str], result: dict):
+    seen = set()
+    for alias in aliases:
+        normalized = participant_tools.normalize_name(alias)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        existing = find_scout_alias(alias)
+        add_scout_alias(target["user_id"], target["username"], alias)
+        item = (target["user_id"], target["username"], alias)
+        if existing and str(existing[0]) != str(target["user_id"]):
+            result["replaced"].append((*item, existing[1]))
+        elif existing:
+            result["unchanged"].append(item)
+        else:
+            result["saved"].append(item)
+
+
+def build_alias_import_result_embed(result: dict):
+    total_saved = len(result["saved"]) + len(result["replaced"]) + len(result["unchanged"])
+    embed = discord.Embed(
+        title="Importacion de padron",
+        description=f"Aliases procesados: **{total_saved}**",
+        color=COLOR_SUCCESS if total_saved and not result["unresolved"] else COLOR_WARNING,
+    )
+    embed.add_field(name="Nuevos", value=str(len(result["saved"])), inline=True)
+    embed.add_field(name="Actualizados", value=str(len(result["replaced"])), inline=True)
+    embed.add_field(name="Ya existian", value=str(len(result["unchanged"])), inline=True)
+    if result["saved"]:
+        embed.add_field(name="Guardados", value=format_alias_result_lines(result["saved"]), inline=False)
+    if result["replaced"]:
+        embed.add_field(name="Reasignados", value=format_alias_replaced_lines(result["replaced"]), inline=False)
+    if result["unresolved"]:
+        embed.add_field(name="No resueltos", value="\n".join(result["unresolved"][:15])[:1000], inline=False)
+    if result["empty"]:
+        embed.add_field(
+            name="Sin aliases en la fila",
+            value=", ".join(f"`{name}`" for name in result["empty"][:20])[:1000],
+            inline=False,
+        )
+    return embed
+
+
+def format_alias_result_lines(rows: list[tuple]):
+    lines = [f"<@{user_id}> - `+{alias}`" for user_id, _, alias in rows[:15]]
+    if len(rows) > 15:
+        lines.append(f"... y {len(rows) - 15} mas")
+    return "\n".join(lines)[:1000]
+
+
+def format_alias_replaced_lines(rows: list[tuple]):
+    lines = [
+        f"`+{alias}` -> <@{user_id}> (antes: `{previous}`)"
+        for user_id, _, alias, previous in rows[:12]
+    ]
+    if len(rows) > 12:
+        lines.append(f"... y {len(rows) - 12} mas")
+    return "\n".join(lines)[:1000]
 
 
 @admin_group.command(name="export_ranking", description="Exporta el ranking actual o el ultimo cierre semanal")
@@ -3015,7 +3457,8 @@ def format_kicked_member_lines(members: list[discord.Member]):
     return "\n".join(lines)
 
 
-def build_xlsx_bytes(rows: list[list]):
+def build_xlsx_bytes(rows: list[list], sheet_name: str = "Ranking"):
+    sheet_name = sanitize_xlsx_sheet_name(sheet_name)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as xlsx:
         xlsx.writestr(
@@ -3048,9 +3491,9 @@ def build_xlsx_bytes(rows: list[list]):
         )
         xlsx.writestr(
             "xl/workbook.xml",
-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheets><sheet name="Ranking" sheetId="1" r:id="rId1"/></sheets>
+<sheets><sheet name="{xml_escape(sheet_name)}" sheetId="1" r:id="rId1"/></sheets>
 </workbook>""",
         )
         xlsx.writestr("xl/worksheets/sheet1.xml", build_worksheet_xml(rows))
@@ -3073,6 +3516,11 @@ def build_xlsx_bytes(rows: list[list]):
         )
     output.seek(0)
     return output.getvalue()
+
+
+def sanitize_xlsx_sheet_name(name: str):
+    cleaned = re.sub(r"[\[\]:*?/\\]", " ", str(name or "Sheet1")).strip()
+    return (cleaned or "Sheet1")[:31]
 
 
 def build_worksheet_xml(rows: list[list]):

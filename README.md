@@ -46,9 +46,7 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 | `/admin afks` | Revisa hasta 25 AFKs, permite cambiar puntos, descartar falsos positivos y kickear restantes | Admin/GM |
 | `/admin puntos fuente` | Panel para sumar o restar puntos en masa por actividad, en ranking actual o ultimo cierre | Admin |
 | `/admin modificar_puntos fuente` | Suma o resta actividades a un scout, en ranking actual o ultimo cierre | Admin |
-| `/admin registrar_alt` | Asocia nombres alternos a un scout | Admin |
-| `/admin quitar_alt` | Quita un nombre alterno | Admin |
-| `/admin ver_alts` | Muestra alts asociados a un scout | Admin |
+| `/admin padron` | Panel para exportar/importar aliases por XLSX y editar alts manualmente | Admin |
 | `/admin export_ranking fuente formato` | Exporta el ranking actual o el ultimo cierre semanal como Excel o CSV | Admin |
 | `/admin reset_ranking` | Resetea todos los puntos del ranking | Admin |
 
