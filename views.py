@@ -749,10 +749,24 @@ async def set_source_reaction(interaction: discord.Interaction, emoji: str):
         source_message_id = int(parts[-1])
         channel = interaction.client.get_channel(channel_id) or await interaction.client.fetch_channel(channel_id)
         source_message = await channel.fetch_message(source_message_id)
-        await source_message.clear_reaction("\N{HOURGLASS}")
-        await source_message.clear_reaction("\N{OUTBOX TRAY}")
+        for old_emoji in (
+            "\N{WHITE HEAVY CHECK MARK}",
+            "\N{CROSS MARK}",
+            "\N{HOURGLASS}",
+            "\N{OUTBOX TRAY}",
+        ):
+            await remove_client_reaction(source_message, old_emoji, interaction.client)
         await source_message.add_reaction(emoji)
     except (discord.HTTPException, IndexError, ValueError, AttributeError):
+        pass
+
+
+async def remove_client_reaction(message: discord.Message, emoji: str, client):
+    if not getattr(client, "user", None):
+        return
+    try:
+        await message.remove_reaction(emoji, client.user)
+    except discord.HTTPException:
         pass
 
 

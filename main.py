@@ -210,10 +210,7 @@ async def on_message(message: discord.Message):
         color=COLOR_WARNING
     )
     analyzing_msg = await message.reply(embed=analyzing_embed, mention_author=False)
-    try:
-        await message.add_reaction("\N{HOURGLASS}")
-    except discord.HTTPException:
-        pass
+    await set_pending_source_reaction(message)
 
     ocr_text = ""
     ocr_activity = None
@@ -400,6 +397,28 @@ def is_supported_image(attachment: discord.Attachment):
     if content_type == "image/gif" or filename.endswith(".gif"):
         return False
     return content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS)
+
+async def set_pending_source_reaction(message: discord.Message):
+    for emoji in (
+        "\N{WHITE HEAVY CHECK MARK}",
+        "\N{CROSS MARK}",
+        "\N{OUTBOX TRAY}",
+        "\N{HOURGLASS}",
+    ):
+        await remove_bot_reaction(message, emoji)
+    try:
+        await message.add_reaction("\N{HOURGLASS}")
+    except discord.HTTPException:
+        pass
+
+async def remove_bot_reaction(message: discord.Message, emoji: str):
+    bot_user = message.guild.me if message.guild else bot.user
+    if not bot_user:
+        return
+    try:
+        await message.remove_reaction(emoji, bot_user)
+    except discord.HTTPException:
+        pass
 
 async def get_evidence_participants(message: discord.Message):
     participants = {str(message.author.id): message.author.display_name}
@@ -791,6 +810,7 @@ async def create_scouteo_count_review(
         view=EvidenceReviewView(str(message.id))
     )
     set_evidence_review_message(str(message.id), str(review_msg.id))
+    await set_pending_source_reaction(message)
     print(f"[SCOUTEO SUMMARY] enviado review={review_msg.id}")
 
     if suggested_participants or unresolved_names:

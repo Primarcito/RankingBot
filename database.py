@@ -240,7 +240,23 @@ def create_evidence_review(
                 (message_id, user_id, actividad, puntos_unit, fecha, "pending", target_snapshot_id)
             )
         except sqlite3.IntegrityError:
-            return 0
+            row = conn.execute(
+                "SELECT status FROM evidence_messages WHERE message_id=?",
+                (message_id,)
+            ).fetchone()
+            if not row or row[0] != "rejected":
+                return 0
+            conn.execute("DELETE FROM evidence_participants WHERE message_id=?", (message_id,))
+            conn.execute("DELETE FROM evidence_messages WHERE message_id=?", (message_id,))
+            conn.execute(
+                """
+                INSERT INTO evidence_messages (
+                    message_id, user_id, actividad, puntos, fecha, status, target_snapshot_id
+                )
+                VALUES (?,?,?,?,?,?,?)
+                """,
+                (message_id, user_id, actividad, puntos_unit, fecha, "pending", target_snapshot_id)
+            )
         for participant in participants:
             participant_id, participant_name, cantidad = normalize_participant_entry(participant)
             if not target_snapshot_id:
