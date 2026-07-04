@@ -9,6 +9,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -2548,7 +2549,7 @@ class AliasPatternDashboardView(SafeView):
         )
         await interaction.followup.send("Leyendo XLSX y registrando aliases...", ephemeral=True)
         try:
-            content = await attachment.read(use_cached=True)
+            content = await read_attachment_bytes(attachment)
             rows = parse_alias_pattern_xlsx(content)
             result = await import_alias_pattern_rows(interaction.guild, rows)
         except Exception as err:
@@ -2661,6 +2662,26 @@ def build_alias_pattern_xlsx_file():
 
     filename = f"padron_aliases_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
     return discord.File(fp=io.BytesIO(build_xlsx_bytes(rows, sheet_name="Padron")), filename=filename)
+
+
+async def read_attachment_bytes(attachment: discord.Attachment):
+    errors = []
+    try:
+        return await attachment.read(use_cached=False)
+    except discord.HTTPException as err:
+        errors.append(f"attachment.read: {err}")
+
+    if attachment.url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(attachment.url) as response:
+                    if response.status == 200:
+                        return await response.read()
+                    errors.append(f"GET {response.status}: {await response.text()}")
+        except aiohttp.ClientError as err:
+            errors.append(f"GET error: {err}")
+
+    raise RuntimeError("; ".join(errors) or "No pude leer el archivo adjunto.")
 
 
 def parse_alias_pattern_xlsx(content: bytes):
