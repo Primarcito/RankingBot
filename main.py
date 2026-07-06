@@ -4199,9 +4199,13 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
 
 
 def priority_post_winners(result: dict):
+    publishable_ids = {
+        str(member.id)
+        for member in [*result.get("assigned", []), *result.get("already", [])]
+    }
     return [
         item for item in result.get("candidates", [])
-        if is_discord_user_id(item.get("user_id"))
+        if is_discord_user_id(item.get("user_id")) and str(item["user_id"]) in publishable_ids
     ]
 
 
@@ -4244,7 +4248,7 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
             f"Corte aplicado: **{minimo} puntos o mas**\n"
             f"Fuente: **{source_label}**\n"
             f"Rol: {role.mention}\n"
-            f"Ganadores por ranking: **{len(winners)}**"
+            f"Ganadores publicados: **{len(winners)}**"
         ),
         color=COLOR_RANKING,
     )
