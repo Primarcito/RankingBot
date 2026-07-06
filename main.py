@@ -1468,6 +1468,16 @@ def parse_snapshot_datetime(value):
     return parsed.astimezone(timezone.utc)
 
 
+def normalize_mapeo_snapshot_range(snapshot):
+    analysis_end = parse_snapshot_datetime(snapshot[3]) or parse_snapshot_datetime(snapshot[1])
+    analysis_start = parse_snapshot_datetime(snapshot[2])
+    if not analysis_end:
+        analysis_end = datetime.now(timezone.utc)
+    if not analysis_start or analysis_start >= analysis_end:
+        analysis_start = analysis_end - timedelta(days=7)
+    return analysis_start, analysis_end
+
+
 def get_mapeo_count_target(source: str = "actual"):
     source = normalize_priority_source(source)
     if source == "ultimo_cierre":
@@ -1475,10 +1485,7 @@ def get_mapeo_count_target(source: str = "actual"):
         if not snapshot:
             return {"missing": True}
 
-        analysis_start = parse_snapshot_datetime(snapshot[2])
-        analysis_end = parse_snapshot_datetime(snapshot[3])
-        if not analysis_start:
-            analysis_start = current_weekly_ranking_start()
+        analysis_start, analysis_end = normalize_mapeo_snapshot_range(snapshot)
         return {
             "snapshot_id": int(snapshot[0]),
             "label": f"Cierre semanal #{snapshot[0]} ({snapshot[3]})",
