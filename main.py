@@ -95,7 +95,7 @@ MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
 MAPEO_SCALING_EXPONENT = 2.0
-BOT_BUILD = "mapeo-range-v3"
+BOT_BUILD = "mapeo-checkpoint-v4"
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
 
@@ -1401,9 +1401,10 @@ async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual
     if not events:
         range_end = f" hasta `{analysis_end.strftime('%Y-%m-%d %H:%M UTC')}`" if analysis_end else ""
         fallback_text = " Rango corregido automaticamente a 7 dias." if target.get("range_fallback") else ""
+        checkpoint_text = " Checkpoint aprobado usado." if target.get("checkpoint_source") else ""
         await interaction.followup.send(
             f"No encontre eventos validos de mapeo desde `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`{range_end}."
-            f"{fallback_text} Build `{BOT_BUILD}`."
+            f"{fallback_text}{checkpoint_text} Build `{BOT_BUILD}`."
         )
         return
 
@@ -1416,6 +1417,7 @@ async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual
             MAPEO_MAX_WEEKLY_UNITS,
             analysis_end=analysis_end,
             target_label=target["label"],
+            checkpoint_source=target.get("checkpoint_source"),
             range_fallback=target.get("range_fallback", False),
         ),
         view=MapeoAnalysisView(
@@ -1426,6 +1428,8 @@ async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual
             analysis_end,
             target["snapshot_id"],
             target["label"],
+            target.get("checkpoint_key"),
+            target.get("checkpoint_source"),
             target.get("range_fallback", False),
         ),
     )
@@ -1483,6 +1487,31 @@ def normalize_mapeo_snapshot_range(snapshot):
     return analysis_start, analysis_end, used_fallback
 
 
+def get_mapeo_checkpoint_key(target_snapshot_id: int | None = None):
+    if target_snapshot_id:
+        return f"{MAPEO_ANALYSIS_CHECKPOINT_KEY}:cierre:{target_snapshot_id}"
+    return MAPEO_ANALYSIS_CHECKPOINT_KEY
+
+
+def get_mapeo_checkpoint_start(
+    checkpoint_key: str,
+    fallback_start: datetime,
+    analysis_end: datetime | None = None,
+    fallback_keys: tuple[str, ...] = (),
+):
+    checked_keys = (checkpoint_key, *fallback_keys)
+    for key in checked_keys:
+        checkpoint_at = parse_snapshot_datetime(get_bot_state(key))
+        if not checkpoint_at:
+            continue
+        if checkpoint_at < fallback_start:
+            continue
+        if analysis_end and checkpoint_at > analysis_end:
+            continue
+        return checkpoint_at, key
+    return fallback_start, None
+
+
 def get_mapeo_count_target(source: str = "actual"):
     source = normalize_priority_source(source)
     if source == "ultimo_cierre":
@@ -1491,21 +1520,34 @@ def get_mapeo_count_target(source: str = "actual"):
             return {"missing": True}
 
         analysis_start, analysis_end, range_fallback = normalize_mapeo_snapshot_range(snapshot)
+        checkpoint_key = get_mapeo_checkpoint_key(int(snapshot[0]))
+        analysis_start, checkpoint_source = get_mapeo_checkpoint_start(
+            checkpoint_key,
+            analysis_start,
+            analysis_end,
+            fallback_keys=(MAPEO_ANALYSIS_CHECKPOINT_KEY,),
+        )
         return {
             "snapshot_id": int(snapshot[0]),
             "label": f"Cierre semanal #{snapshot[0]} ({snapshot[3]})",
             "analysis_start": analysis_start,
             "analysis_end": analysis_end,
+            "checkpoint_key": checkpoint_key,
+            "checkpoint_source": checkpoint_source,
             "range_fallback": range_fallback,
             "missing": False,
         }
 
     week_start = current_weekly_ranking_start()
+    checkpoint_key = get_mapeo_checkpoint_key()
+    analysis_start, checkpoint_source = get_mapeo_checkpoint_start(checkpoint_key, week_start)
     return {
         "snapshot_id": None,
         "label": "Ranking actual",
-        "analysis_start": get_mapeo_analysis_start(week_start),
+        "analysis_start": analysis_start,
         "analysis_end": None,
+        "checkpoint_key": checkpoint_key,
+        "checkpoint_source": checkpoint_source,
         "range_fallback": False,
         "missing": False,
     }
@@ -1521,6 +1563,7 @@ def build_mapeo_analysis_embed(
     relock_weight: float = MAPEO_RELOCK_WEIGHT,
     analysis_end: datetime | None = None,
     target_label: str = "Ranking actual",
+    checkpoint_source: str | None = None,
     range_fallback: bool = False,
     status_text: str | None = None,
     color: int = COLOR_WARNING,
@@ -1543,6 +1586,12 @@ def build_mapeo_analysis_embed(
         ),
         color=color,
     )
+    if checkpoint_source:
+        embed.add_field(
+            name="Checkpoint aprobado",
+            value="El analisis empieza desde el ultimo mapeo aprobado para este destino.",
+            inline=False,
+        )
     if range_fallback:
         embed.add_field(
             name="Rango corregido",
@@ -1654,6 +1703,8 @@ class MapeoAnalysisView(SafeView):
         analysis_end: datetime | None = None,
         target_snapshot_id: int | None = None,
         target_label: str = "Ranking actual",
+        checkpoint_key: str | None = None,
+        checkpoint_source: str | None = None,
         range_fallback: bool = False,
     ):
         super().__init__(timeout=1800)
@@ -1664,6 +1715,8 @@ class MapeoAnalysisView(SafeView):
         self.analysis_end = analysis_end
         self.target_snapshot_id = target_snapshot_id
         self.target_label = target_label
+        self.checkpoint_key = checkpoint_key or get_mapeo_checkpoint_key(target_snapshot_id)
+        self.checkpoint_source = checkpoint_source
         self.range_fallback = range_fallback
 
     @discord.ui.button(label="Enviar a administrar evidencias", style=discord.ButtonStyle.success)
@@ -1689,6 +1742,7 @@ class MapeoAnalysisView(SafeView):
             MAPEO_MAX_WEEKLY_UNITS,
             analysis_end=self.analysis_end,
             target_label=self.target_label,
+            checkpoint_source=self.checkpoint_source,
             range_fallback=self.range_fallback,
             status_text=f"Pendiente de aprobacion. Enviado por {interaction.user.mention}",
         )
@@ -1700,6 +1754,8 @@ class MapeoAnalysisView(SafeView):
             self.analysis_end,
             self.target_snapshot_id,
             self.target_label,
+            self.checkpoint_key,
+            self.checkpoint_source,
             self.range_fallback,
         )
         review_message = await review_channel.send(embed=embed, view=review_view)
@@ -1716,6 +1772,7 @@ class MapeoAnalysisView(SafeView):
                 MAPEO_MAX_WEEKLY_UNITS,
                 analysis_end=self.analysis_end,
                 target_label=self.target_label,
+                checkpoint_source=self.checkpoint_source,
                 range_fallback=self.range_fallback,
             ),
             view=self,
@@ -1732,6 +1789,8 @@ class MapeoReviewView(SafeView):
         analysis_end: datetime | None = None,
         target_snapshot_id: int | None = None,
         target_label: str = "Ranking actual",
+        checkpoint_key: str | None = None,
+        checkpoint_source: str | None = None,
         range_fallback: bool = False,
         max_units: int = MAPEO_MAX_WEEKLY_UNITS,
         road_weight: float = MAPEO_ROAD_WEIGHT,
@@ -1746,6 +1805,8 @@ class MapeoReviewView(SafeView):
         self.analysis_end = analysis_end
         self.target_snapshot_id = target_snapshot_id
         self.target_label = target_label
+        self.checkpoint_key = checkpoint_key or get_mapeo_checkpoint_key(target_snapshot_id)
+        self.checkpoint_source = checkpoint_source
         self.range_fallback = range_fallback
         self.max_units = max_units
         self.road_weight = road_weight
@@ -1764,6 +1825,7 @@ class MapeoReviewView(SafeView):
             self.relock_weight,
             analysis_end=self.analysis_end,
             target_label=self.target_label,
+            checkpoint_source=self.checkpoint_source,
             range_fallback=self.range_fallback,
             status_text=status_text,
             color=color,
@@ -1832,8 +1894,8 @@ class MapeoReviewView(SafeView):
                 applied_units_total += int(units)
         set_bot_state(f"applied:{source_key}", datetime.now(timezone.utc).isoformat())
 
-        if self.latest_event_at and not self.target_snapshot_id:
-            set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, self.latest_event_at.isoformat())
+        if self.latest_event_at:
+            set_bot_state(self.checkpoint_key, self.latest_event_at.isoformat())
 
         for item in self.children:
             item.disabled = True
@@ -1844,6 +1906,7 @@ class MapeoReviewView(SafeView):
                 f"Aprobado por {interaction.user.mention}. "
                 f"Destino: **{self.target_label}**. "
                 f"Aplicadas `{applied_units_total}` unidades de mapeo x `{mapeo_value}` pt = `{total_points}` pts a `{len(awards) - len(failed)}` jugadores. "
+                f"Checkpoint actualizado para futuros analisis. "
                 f"{'Rango cerrado para futuros analisis.' if not self.target_snapshot_id else 'El ranking actual no fue modificado.'}{skipped_text}{failed_text}",
                 COLOR_SUCCESS,
             ),
