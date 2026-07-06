@@ -96,6 +96,7 @@ MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
 MAPEO_SCALING_EXPONENT = 2.0
 BOT_BUILD = "mapeo-checkpoint-v4"
+PRIO_POST_CHANNEL_ID = 1505949944043929651
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
 
@@ -4186,6 +4187,71 @@ def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     return embed
 
 
+def priority_post_winners(result: dict):
+    return [
+        item for item in result.get("candidates", [])
+        if is_discord_user_id(item.get("user_id"))
+    ]
+
+
+def build_priority_mention_chunks(mentions: list[str], header: str, max_length: int = 1850):
+    if not mentions:
+        return [header]
+
+    chunks = []
+    current = header
+    for mention in mentions:
+        candidate = f"{current} {mention}" if current else mention
+        if len(candidate) > max_length:
+            chunks.append(current)
+            current = mention
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
+    winners = priority_post_winners(result)
+    mentions = [f"<@{item['user_id']}>" for item in winners]
+    source_label = result.get("source_label", "Ranking actual")
+    header = (
+        "Se cerro la prio semanal. Estos jugadores ganaron prioridad por ranking:"
+        if winners else
+        "Se cerro la prio semanal, pero nadie alcanzo el corte por ranking."
+    )
+    content_chunks = build_priority_mention_chunks(mentions, header)
+
+    top_lines = [
+        f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
+        for index, item in enumerate(winners[:12], start=1)
+    ]
+    embed = discord.Embed(
+        title="Prio semanal",
+        description=(
+            f"Corte aplicado: **{minimo} puntos o mas**\n"
+            f"Fuente: **{source_label}**\n"
+            f"Rol: {role.mention}\n"
+            f"Ganadores por ranking: **{len(winners)}**"
+        ),
+        color=COLOR_RANKING,
+    )
+    embed.add_field(
+        name="Ganadores",
+        value="\n".join(top_lines) if top_lines else "Nadie alcanzo el corte.",
+        inline=False,
+    )
+    if len(winners) > len(top_lines):
+        embed.add_field(
+            name="Lista completa",
+            value=f"Se pinguearon {len(winners)} ganadores en el mensaje.",
+            inline=False,
+        )
+    embed.set_footer(text="Prio aplicada desde el panel semanal.")
+    return content_chunks, embed, winners
+
+
 class PrioDashboardView(SafeView):
     def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS, source: str = "actual"):
         super().__init__(timeout=600)
@@ -4245,6 +4311,108 @@ class PrioDashboardView(SafeView):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_modal(PrioApplyConfirmModal(self.minimo, self.source))
+
+
+class PriorityPostActionView(SafeView):
+    def __init__(self, minimo: int, source: str, role_id: int, result: dict):
+        super().__init__(timeout=900)
+        self.minimo = minimo
+        self.source = normalize_priority_source(source)
+        self.role_id = int(role_id)
+        self.result = result
+
+    @discord.ui.button(label="Postear ganadores", style=discord.ButtonStyle.success)
+    async def preview_post(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{self.role_id}`.", ephemeral=True)
+            return
+
+        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result)
+        preview = (
+            f"Preview del post en <#{PRIO_POST_CHANNEL_ID}>.\n\n"
+            f"{content_chunks[0]}"
+        )
+        if len(content_chunks) > 1:
+            preview += f"\n\nAdemas se enviaran `{len(content_chunks) - 1}` mensaje(s) extra para pinguear a todos."
+        if winners:
+            preview += "\n\nLos pings estan desactivados en este preview; solo pinguearan al publicar."
+        await interaction.response.send_message(
+            content=preview[:2000],
+            embed=embed,
+            view=PriorityPostConfirmView(self.minimo, self.source, self.role_id, self.result),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+
+class PriorityPostConfirmView(SafeView):
+    def __init__(self, minimo: int, source: str, role_id: int, result: dict):
+        super().__init__(timeout=300)
+        self.minimo = minimo
+        self.source = normalize_priority_source(source)
+        self.role_id = int(role_id)
+        self.result = result
+        self.published = False
+
+    @discord.ui.button(label="Publicar ahora", style=discord.ButtonStyle.success)
+    async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        if self.published:
+            await interaction.response.send_message("Este post ya fue publicado desde este preview.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{self.role_id}`.", ephemeral=True)
+            return
+
+        channel = interaction.client.get_channel(PRIO_POST_CHANNEL_ID)
+        if not channel:
+            try:
+                channel = await interaction.client.fetch_channel(PRIO_POST_CHANNEL_ID)
+            except discord.HTTPException:
+                await interaction.response.send_message("No pude abrir el canal de posteo de prio.", ephemeral=True)
+                return
+
+        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            first_message = await channel.send(
+                content=content_chunks[0],
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            for chunk in content_chunks[1:]:
+                await channel.send(
+                    content=chunk,
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                )
+        except discord.HTTPException as err:
+            await interaction.followup.send(f"No pude publicar el post de prio: `{err}`", ephemeral=True)
+            return
+
+        self.published = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(view=self)
+        await interaction.followup.send(
+            f"Post publicado en {channel.mention}: {first_message.jump_url}\n"
+            f"Ganadores pingueados: `{len(winners)}`.",
+            ephemeral=True,
+        )
 
 
 class PrioCutoffModal(SafeModal):
@@ -4314,7 +4482,12 @@ class PrioApplyConfirmModal(SafeModal):
         result = await sync_priority_role(interaction.guild, role, self.minimo, self.source)
         embed = build_priority_apply_embed(self.minimo, role, result)
         file = build_priority_csv_file(self.minimo, interaction.guild, self.source)
-        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+        await interaction.followup.send(
+            embed=embed,
+            file=file,
+            view=PriorityPostActionView(self.minimo, self.source, role.id, result),
+            ephemeral=True,
+        )
 
 
 def get_priority_role(interaction: discord.Interaction):
