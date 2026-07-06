@@ -90,10 +90,11 @@ AURA_TAUNT_TARGETS = (
 )
 MAPEO_LOG_CHANNEL_ID = 1505954990756204755
 MAPEO_ANALYSIS_CHECKPOINT_KEY = "mapeo_analysis_checkpoint"
-MAPEO_MAX_WEEKLY_UNITS = 30
+MAPEO_MAX_WEEKLY_UNITS = 25
 MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
+MAPEO_SCALING_EXPONENT = 2.0
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
 
@@ -1355,7 +1356,14 @@ class ScouteoCountRuleModal(SafeModal):
 
 
 @admin_group.command(name="analizar_mapeo", description="Analiza logs de mapeo desde el inicio semanal del ranking")
-async def analizar_mapeo(interaction: discord.Interaction):
+@app_commands.describe(
+    fuente="Destino del conteo: ranking actual o ultimo cierre semanal",
+)
+@app_commands.choices(fuente=[
+    app_commands.Choice(name="Ranking actual", value="actual"),
+    app_commands.Choice(name="Ultimo cierre semanal", value="ultimo_cierre"),
+])
+async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual"):
     if not can_review_member(interaction.user):
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
@@ -1370,12 +1378,17 @@ async def analizar_mapeo(interaction: discord.Interaction):
             await interaction.followup.send("No pude abrir el canal de mapeo configurado.")
             return
 
-    week_start = current_weekly_ranking_start()
-    analysis_start = get_mapeo_analysis_start(week_start)
+    target = get_mapeo_count_target(fuente)
+    if target["missing"]:
+        await interaction.followup.send("No encontre un cierre semanal guardado para sumar el mapeo.", ephemeral=True)
+        return
+
+    analysis_start = target["analysis_start"]
+    analysis_end = target["analysis_end"]
     events = []
     scanned = 0
     latest_event_at = None
-    async for message in channel.history(limit=None, after=analysis_start):
+    async for message in channel.history(limit=None, after=analysis_start, before=analysis_end):
         scanned += 1
         event = mapping_analysis.parse_mapping_message(message)
         if event:
@@ -1385,15 +1398,31 @@ async def analizar_mapeo(interaction: discord.Interaction):
                 latest_event_at = message.created_at
 
     if not events:
+        range_end = f" hasta `{analysis_end.strftime('%Y-%m-%d %H:%M UTC')}`" if analysis_end else ""
         await interaction.followup.send(
-            f"No encontre eventos validos de mapeo desde `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`."
+            f"No encontre eventos validos de mapeo desde `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`{range_end}."
         )
         return
 
     analysis = mapping_analysis.analyze_mapping_events(events)
     await interaction.followup.send(
-        embed=build_mapeo_analysis_embed(analysis, scanned, analysis_start, MAPEO_MAX_WEEKLY_UNITS),
-        view=MapeoAnalysisView(analysis, scanned, analysis_start, latest_event_at),
+        embed=build_mapeo_analysis_embed(
+            analysis,
+            scanned,
+            analysis_start,
+            MAPEO_MAX_WEEKLY_UNITS,
+            analysis_end=analysis_end,
+            target_label=target["label"],
+        ),
+        view=MapeoAnalysisView(
+            analysis,
+            scanned,
+            analysis_start,
+            latest_event_at,
+            analysis_end,
+            target["snapshot_id"],
+            target["label"],
+        ),
     )
 
 
@@ -1427,6 +1456,47 @@ def get_mapeo_analysis_start(week_start: datetime):
     return max(week_start, checkpoint_at)
 
 
+def parse_snapshot_datetime(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def get_mapeo_count_target(source: str = "actual"):
+    source = normalize_priority_source(source)
+    if source == "ultimo_cierre":
+        snapshot = get_latest_ranking_snapshot()
+        if not snapshot:
+            return {"missing": True}
+
+        analysis_start = parse_snapshot_datetime(snapshot[2])
+        analysis_end = parse_snapshot_datetime(snapshot[3])
+        if not analysis_start:
+            analysis_start = current_weekly_ranking_start()
+        return {
+            "snapshot_id": int(snapshot[0]),
+            "label": f"Cierre semanal #{snapshot[0]} ({snapshot[3]})",
+            "analysis_start": analysis_start,
+            "analysis_end": analysis_end,
+            "missing": False,
+        }
+
+    week_start = current_weekly_ranking_start()
+    return {
+        "snapshot_id": None,
+        "label": "Ranking actual",
+        "analysis_start": get_mapeo_analysis_start(week_start),
+        "analysis_end": None,
+        "missing": False,
+    }
+
+
 def build_mapeo_analysis_embed(
     analysis: dict,
     scanned: int,
@@ -1435,6 +1505,8 @@ def build_mapeo_analysis_embed(
     road_weight: float = MAPEO_ROAD_WEIGHT,
     priority_weight: float = MAPEO_PRIORITY_WEIGHT,
     relock_weight: float = MAPEO_RELOCK_WEIGHT,
+    analysis_end: datetime | None = None,
+    target_label: str = "Ranking actual",
     status_text: str | None = None,
     color: int = COLOR_WARNING,
 ):
@@ -1447,7 +1519,9 @@ def build_mapeo_analysis_embed(
         title="Analisis de mapeo",
         description=(
             f"Canal: <#{MAPEO_LOG_CHANNEL_ID}>\n"
+            f"Destino: **{target_label}**\n"
             f"Desde: `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
+            f"Hasta: `{analysis_end.strftime('%Y-%m-%d %H:%M UTC') if analysis_end else 'ahora'}`\n"
             f"Mensajes revisados: `{scanned}`\n"
             f"Eventos detectados: `{summary['total_events']}`"
         ),
@@ -1459,6 +1533,7 @@ def build_mapeo_analysis_embed(
             f"Valor Mapeo: `{mapeo_value}` pt por unidad\n"
             f"Tope mejor aporte: `{max_units}` unidades x `{mapeo_value}` pt Mapeo = `{max_units * mapeo_value}` pts\n"
             f"Pesos: `Road {mapping_analysis.format_score(road_weight)} | Priority {mapping_analysis.format_score(priority_weight)} | RELOCK {mapping_analysis.format_score(relock_weight)}`\n"
+            f"Curva: `exponencial x{mapping_analysis.format_score(MAPEO_SCALING_EXPONENT)}`\n"
             f"Peso top: `{mapping_analysis.format_score(top_weight)}` | Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
         inline=False,
@@ -1479,13 +1554,13 @@ def build_mapeo_analysis_embed(
         name="Criterio",
         value=(
             "Solo la primera ruta `From -> To` cuenta como ruta util. "
-            "Duplicados suman `0`. El mejor aporte recibe el tope de unidades y el bot multiplica esas unidades por el valor de Mapeo."
+            "Duplicados suman `0`. El mejor aporte recibe el tope de unidades; los aportes menores bajan con curva exponencial y el bot multiplica esas unidades por el valor de Mapeo."
         ),
         inline=False,
     )
     embed.add_field(
         name="Ranking",
-        value=mapping_analysis.build_ranking_table(analysis["ranking"], max_units, mapeo_value),
+        value=mapping_analysis.build_ranking_table(analysis["ranking"], max_units, mapeo_value, exponent=MAPEO_SCALING_EXPONENT),
         inline=False,
     )
     if status_text:
@@ -1496,7 +1571,7 @@ def build_mapeo_analysis_embed(
 def build_mapeo_analysis_files(analysis: dict):
     mapeo_value = get_puntos("mapeo") or 1
     return [
-        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], MAPEO_MAX_WEEKLY_UNITS, mapeo_value), filename="mapeo_ranking.csv"),
+        discord.File(mapping_analysis.ranking_csv_bytes(analysis["ranking"], MAPEO_MAX_WEEKLY_UNITS, mapeo_value, MAPEO_SCALING_EXPONENT), filename="mapeo_ranking.csv"),
         discord.File(mapping_analysis.duplicates_csv_bytes(analysis["duplicates"]), filename="mapeo_duplicados.csv"),
         discord.File(mapping_analysis.events_csv_bytes(analysis["events"]), filename="mapeo_eventos.csv"),
     ]
@@ -1508,7 +1583,7 @@ def build_mapeo_unit_awards(analysis: dict, max_units: int):
     awards = []
     skipped = []
     for row in ranking:
-        units = mapping_analysis.final_units_for_row(row, top_weight, max_units)
+        units = mapping_analysis.final_units_for_row(row, top_weight, max_units, MAPEO_SCALING_EXPONENT)
         if units <= 0:
             continue
         if not row.get("discord_id"):
@@ -1548,12 +1623,24 @@ def apply_mapeo_score_settings(
 
 
 class MapeoAnalysisView(SafeView):
-    def __init__(self, analysis: dict, scanned: int, analysis_start: datetime, latest_event_at: datetime | None):
+    def __init__(
+        self,
+        analysis: dict,
+        scanned: int,
+        analysis_start: datetime,
+        latest_event_at: datetime | None,
+        analysis_end: datetime | None = None,
+        target_snapshot_id: int | None = None,
+        target_label: str = "Ranking actual",
+    ):
         super().__init__(timeout=1800)
         self.analysis = analysis
         self.scanned = scanned
         self.analysis_start = analysis_start
         self.latest_event_at = latest_event_at
+        self.analysis_end = analysis_end
+        self.target_snapshot_id = target_snapshot_id
+        self.target_label = target_label
 
     @discord.ui.button(label="Enviar a administrar evidencias", style=discord.ButtonStyle.success)
     async def send_to_review(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1576,9 +1663,19 @@ class MapeoAnalysisView(SafeView):
             self.scanned,
             self.analysis_start,
             MAPEO_MAX_WEEKLY_UNITS,
+            analysis_end=self.analysis_end,
+            target_label=self.target_label,
             status_text=f"Pendiente de aprobacion. Enviado por {interaction.user.mention}",
         )
-        review_view = MapeoReviewView(self.analysis, self.scanned, self.analysis_start, self.latest_event_at)
+        review_view = MapeoReviewView(
+            self.analysis,
+            self.scanned,
+            self.analysis_start,
+            self.latest_event_at,
+            self.analysis_end,
+            self.target_snapshot_id,
+            self.target_label,
+        )
         review_message = await review_channel.send(embed=embed, view=review_view)
         review_view.message = review_message
 
@@ -1586,7 +1683,14 @@ class MapeoAnalysisView(SafeView):
             item.disabled = True
         await interaction.message.edit(
             content="Analisis enviado a administrar evidencias para revision.",
-            embed=build_mapeo_analysis_embed(self.analysis, self.scanned, self.analysis_start, MAPEO_MAX_WEEKLY_UNITS),
+            embed=build_mapeo_analysis_embed(
+                self.analysis,
+                self.scanned,
+                self.analysis_start,
+                MAPEO_MAX_WEEKLY_UNITS,
+                analysis_end=self.analysis_end,
+                target_label=self.target_label,
+            ),
             view=self,
         )
 
@@ -1598,6 +1702,9 @@ class MapeoReviewView(SafeView):
         scanned: int,
         analysis_start: datetime,
         latest_event_at: datetime | None,
+        analysis_end: datetime | None = None,
+        target_snapshot_id: int | None = None,
+        target_label: str = "Ranking actual",
         max_units: int = MAPEO_MAX_WEEKLY_UNITS,
         road_weight: float = MAPEO_ROAD_WEIGHT,
         priority_weight: float = MAPEO_PRIORITY_WEIGHT,
@@ -1608,6 +1715,9 @@ class MapeoReviewView(SafeView):
         self.scanned = scanned
         self.analysis_start = analysis_start
         self.latest_event_at = latest_event_at
+        self.analysis_end = analysis_end
+        self.target_snapshot_id = target_snapshot_id
+        self.target_label = target_label
         self.max_units = max_units
         self.road_weight = road_weight
         self.priority_weight = priority_weight
@@ -1623,6 +1733,8 @@ class MapeoReviewView(SafeView):
             self.road_weight,
             self.priority_weight,
             self.relock_weight,
+            analysis_end=self.analysis_end,
+            target_label=self.target_label,
             status_text=status_text,
             color=color,
         )
@@ -1662,7 +1774,8 @@ class MapeoReviewView(SafeView):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
 
-        source_key = f"mapeo:{self.latest_event_at.isoformat() if self.latest_event_at else self.analysis_start.isoformat()}"
+        source_scope = f"cierre:{self.target_snapshot_id}" if self.target_snapshot_id else "actual"
+        source_key = f"mapeo:{source_scope}:{self.latest_event_at.isoformat() if self.latest_event_at else self.analysis_start.isoformat()}"
         if get_bot_state(f"applied:{source_key}"):
             await interaction.response.send_message("Estos puntos ya fueron aplicados antes.", ephemeral=True)
             return
@@ -1674,28 +1787,41 @@ class MapeoReviewView(SafeView):
 
         total_points = 0
         mapeo_value = get_puntos("mapeo") or 0
+        failed = []
+        applied_units_total = 0
         for user_id, username, units in awards:
-            total_points += add_activity(str(user_id), username, "mapeo", int(units))
+            if self.target_snapshot_id:
+                result = adjust_snapshot_activity(int(self.target_snapshot_id), str(user_id), username, "mapeo", int(units))
+                if not result.get("ok"):
+                    failed.append(f"{username}: {snapshot_adjust_error_text(result)}")
+                    continue
+                total_points += result["points"]
+                applied_units_total += result["applied_units"]
+            else:
+                total_points += add_activity(str(user_id), username, "mapeo", int(units))
+                applied_units_total += int(units)
         set_bot_state(f"applied:{source_key}", datetime.now(timezone.utc).isoformat())
 
-        if self.latest_event_at:
+        if self.latest_event_at and not self.target_snapshot_id:
             set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, self.latest_event_at.isoformat())
 
         for item in self.children:
             item.disabled = True
-        total_units = sum(units for _, _, units in awards)
         skipped_text = f" No aplicados sin ID: {', '.join(skipped[:5])}." if skipped else ""
+        failed_text = f" No aplicados: {', '.join(failed[:5])}." if failed else ""
         await interaction.response.edit_message(
             embed=self.embed(
                 f"Aprobado por {interaction.user.mention}. "
-                f"Aplicadas `{total_units}` unidades de mapeo x `{mapeo_value}` pt = `{total_points}` pts a `{len(awards)}` jugadores. "
-                f"Rango cerrado para futuros analisis.{skipped_text}",
+                f"Destino: **{self.target_label}**. "
+                f"Aplicadas `{applied_units_total}` unidades de mapeo x `{mapeo_value}` pt = `{total_points}` pts a `{len(awards) - len(failed)}` jugadores. "
+                f"{'Rango cerrado para futuros analisis.' if not self.target_snapshot_id else 'El ranking actual no fue modificado.'}{skipped_text}{failed_text}",
                 COLOR_SUCCESS,
             ),
             view=self,
         )
-        await publish_or_update_dashboard()
-        await publish_or_update_info_ranking()
+        if not self.target_snapshot_id:
+            await publish_or_update_dashboard()
+            await publish_or_update_info_ranking()
 
     @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
