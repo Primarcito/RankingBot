@@ -97,6 +97,7 @@ MAPEO_RELOCK_WEIGHT = 0.15
 MAPEO_SCALING_EXPONENT = 1.0
 BOT_BUILD = "mapeo-lineal-v5"
 PRIO_POST_CHANNEL_ID = 1505949944043929651
+PRIO_SCORE_PAGE_SIZE = 10
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
 
@@ -4245,7 +4246,13 @@ def build_priority_embed_line_chunks(lines: list[str], max_length: int = 950):
     return chunks
 
 
-def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
+def priority_score_page_count(winners: list[dict]):
+    if not winners:
+        return 1
+    return max(1, (len(winners) + PRIO_SCORE_PAGE_SIZE - 1) // PRIO_SCORE_PAGE_SIZE)
+
+
+def build_priority_public_post(minimo: int, role: discord.Role, result: dict, page: int = 0):
     winners = priority_post_winners(result)
     mentions = [f"<@{item['user_id']}>" for item in winners]
     source_label = result.get("source_label", "Ranking actual")
@@ -4256,41 +4263,52 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
     )
     content_chunks = build_priority_mention_chunks(mentions, header)
 
+    total_pages = priority_score_page_count(winners)
+    page = max(0, min(int(page or 0), total_pages - 1))
+    start_index = page * PRIO_SCORE_PAGE_SIZE
+    page_winners = winners[start_index:start_index + PRIO_SCORE_PAGE_SIZE]
     winner_lines = [
-        f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
-        for index, item in enumerate(winners, start=1)
+        f"`#{start_index + index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
+        for index, item in enumerate(page_winners, start=1)
     ]
+    base_description = (
+        f"Corte aplicado: **{minimo} puntos o mas**\n"
+        f"Fuente: **{source_label}**\n"
+        f"Rol: {role.mention}\n"
+        f"Publicados por puntaje: **{len(winners)}**\n"
+        f"Pagina: **{page + 1}/{total_pages}**"
+    )
+    score_text = "\n".join(winner_lines) if winner_lines else "Nadie alcanzo el corte."
+    if winners:
+        page_start = start_index + 1
+        page_end = start_index + len(page_winners)
+        score_title = "Puntaje" if total_pages == 1 else f"Puntaje {page_start}-{page_end}"
+    else:
+        score_title = "Puntaje"
+    full_description = f"{base_description}\n\n**{score_title}**\n{score_text}"
     embed = discord.Embed(
         title="Prio semanal",
-        description=(
-            f"Corte aplicado: **{minimo} puntos o mas**\n"
-            f"Fuente: **{source_label}**\n"
-            f"Rol: {role.mention}\n"
-            f"Ganadores publicados: **{len(winners)}**"
-        ),
+        description=full_description if len(full_description) <= 4096 else base_description,
         color=COLOR_RANKING,
     )
-    line_chunks = build_priority_embed_line_chunks(winner_lines)
-    if line_chunks:
-        for index, chunk in enumerate(line_chunks[:20], start=1):
-            start = sum(len(previous) for previous in line_chunks[:index - 1]) + 1
-            end = start + len(chunk) - 1
-            if len(line_chunks) == 1:
-                name = "Ganadores"
-            elif start == end:
-                name = f"Ganador {start}"
-            else:
-                name = f"Ganadores {start}-{end}"
-            embed.add_field(name=name, value="\n".join(chunk), inline=False)
-    else:
-        embed.add_field(name="Ganadores", value="Nadie alcanzo el corte.", inline=False)
+    line_chunks = []
+    if len(full_description) > 4096:
+        line_chunks = build_priority_embed_line_chunks(winner_lines)
+        if line_chunks:
+            for index, chunk in enumerate(line_chunks[:20], start=1):
+                start = sum(len(previous) for previous in line_chunks[:index - 1]) + 1
+                end = start + len(chunk) - 1
+                name = "Puntaje" if len(line_chunks) == 1 else f"Puntaje {start}-{end}"
+                embed.add_field(name=name, value="\n".join(chunk), inline=False)
+        else:
+            embed.add_field(name="Puntaje", value="Nadie alcanzo el corte.", inline=False)
     if len(line_chunks) > 20:
         embed.add_field(
             name="Lista continua",
             value="La lista completa fue pingueada en el texto del mensaje.",
             inline=False,
         )
-    embed.set_footer(text="Prio aplicada desde el panel semanal.")
+    embed.set_footer(text="Usa los botones para cambiar de pagina.")
     return content_chunks, embed, winners
 
 
@@ -4377,7 +4395,7 @@ class PriorityPostActionView(SafeView):
             await interaction.response.send_message(f"No encontre el rol prio `{self.role_id}`.", ephemeral=True)
             return
 
-        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result)
+        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result, page=0)
         preview = (
             f"Preview del post en <#{PRIO_POST_CHANNEL_ID}>.\n\n"
             f"{content_chunks[0]}"
@@ -4389,22 +4407,112 @@ class PriorityPostActionView(SafeView):
         await interaction.response.send_message(
             content=preview[:2000],
             embed=embed,
-            view=PriorityPostConfirmView(self.minimo, self.source, self.role_id, self.result),
+            view=PriorityPostConfirmView(self.minimo, self.source, self.role_id, self.result, page=0),
             ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
 
+class PriorityPublishedScoreView(SafeView):
+    def __init__(self, minimo: int, source: str, role_id: int, result: dict, page: int = 0):
+        super().__init__(timeout=86400)
+        self.minimo = minimo
+        self.source = normalize_priority_source(source)
+        self.role_id = int(role_id)
+        self.result = result
+        self.page = int(page or 0)
+        self.refresh_buttons()
+
+    def total_pages(self):
+        return priority_score_page_count(priority_post_winners(self.result))
+
+    def refresh_buttons(self):
+        total_pages = self.total_pages()
+        self.page = max(0, min(self.page, total_pages - 1))
+        for item in self.children:
+            if getattr(item, "custom_id", None) == "prio_post_prev":
+                item.disabled = self.page <= 0
+            elif getattr(item, "custom_id", None) == "prio_post_next":
+                item.disabled = self.page >= total_pages - 1
+
+    async def edit_page(self, interaction: discord.Interaction):
+        role = interaction.guild.get_role(self.role_id) if interaction.guild else None
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{self.role_id}`.", ephemeral=True)
+            return
+        _, embed, _ = build_priority_public_post(self.minimo, role, self.result, page=self.page)
+        self.refresh_buttons()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, custom_id="prio_post_prev")
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1
+        await self.edit_page(interaction)
+
+    @discord.ui.button(label="Siguiente", style=discord.ButtonStyle.secondary, custom_id="prio_post_next")
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        await self.edit_page(interaction)
+
+
 class PriorityPostConfirmView(SafeView):
-    def __init__(self, minimo: int, source: str, role_id: int, result: dict):
+    def __init__(self, minimo: int, source: str, role_id: int, result: dict, page: int = 0):
         super().__init__(timeout=300)
         self.minimo = minimo
         self.source = normalize_priority_source(source)
         self.role_id = int(role_id)
         self.result = result
+        self.page = int(page or 0)
         self.published = False
+        self.refresh_buttons()
 
-    @discord.ui.button(label="Publicar ahora", style=discord.ButtonStyle.success)
+    def total_pages(self):
+        return priority_score_page_count(priority_post_winners(self.result))
+
+    def refresh_buttons(self):
+        total_pages = self.total_pages()
+        self.page = max(0, min(self.page, total_pages - 1))
+        for item in self.children:
+            if getattr(item, "custom_id", None) == "prio_preview_prev":
+                item.disabled = self.page <= 0 or self.published
+            elif getattr(item, "custom_id", None) == "prio_preview_next":
+                item.disabled = self.page >= total_pages - 1 or self.published
+            elif getattr(item, "custom_id", None) == "prio_preview_publish":
+                item.disabled = self.published
+
+    def preview_content(self, content_chunks: list[str], winners: list[dict]):
+        preview = (
+            f"Preview del post en <#{PRIO_POST_CHANNEL_ID}>.\n\n"
+            f"{content_chunks[0]}"
+        )
+        if len(content_chunks) > 1:
+            preview += f"\n\nAdemas se enviaran `{len(content_chunks) - 1}` mensaje(s) extra para pinguear a todos."
+        if winners:
+            preview += "\n\nLos pings estan desactivados en este preview; solo pinguearan al publicar."
+        return preview[:2000]
+
+    async def edit_page(self, interaction: discord.Interaction):
+        role = interaction.guild.get_role(self.role_id) if interaction.guild else None
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{self.role_id}`.", ephemeral=True)
+            return
+        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result, page=self.page)
+        self.refresh_buttons()
+        await interaction.response.edit_message(
+            content=self.preview_content(content_chunks, winners),
+            embed=embed,
+            view=self,
+        )
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, custom_id="prio_preview_prev")
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        self.page -= 1
+        await self.edit_page(interaction)
+
+    @discord.ui.button(label="Publicar ahora", style=discord.ButtonStyle.success, custom_id="prio_preview_publish")
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -4429,12 +4537,13 @@ class PriorityPostConfirmView(SafeView):
                 await interaction.response.send_message("No pude abrir el canal de posteo de prio.", ephemeral=True)
                 return
 
-        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result)
+        content_chunks, embed, winners = build_priority_public_post(self.minimo, role, self.result, page=self.page)
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             first_message = await channel.send(
                 content=content_chunks[0],
                 embed=embed,
+                view=PriorityPublishedScoreView(self.minimo, self.source, self.role_id, self.result, self.page),
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
             for chunk in content_chunks[1:]:
@@ -4447,14 +4556,21 @@ class PriorityPostConfirmView(SafeView):
             return
 
         self.published = True
-        for item in self.children:
-            item.disabled = True
+        self.refresh_buttons()
         await interaction.edit_original_response(view=self)
         await interaction.followup.send(
             f"Post publicado en {channel.mention}: {first_message.jump_url}\n"
-            f"Ganadores pingueados: `{len(winners)}`.",
+            f"Menciones publicadas: `{len(winners)}`.",
             ephemeral=True,
         )
+
+    @discord.ui.button(label="Siguiente", style=discord.ButtonStyle.secondary, custom_id="prio_preview_next")
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+            return
+        self.page += 1
+        await self.edit_page(interaction)
 
 
 class PrioCutoffModal(SafeModal):
