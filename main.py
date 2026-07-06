@@ -4201,7 +4201,7 @@ def build_priority_mention_chunks(mentions: list[str], header: str, max_length: 
     chunks = []
     current = header
     for mention in mentions:
-        candidate = f"{current} {mention}" if current else mention
+        candidate = f"{current}\n{mention}" if current else mention
         if len(candidate) > max_length:
             chunks.append(current)
             current = mention
