@@ -95,7 +95,7 @@ MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
 MAPEO_SCALING_EXPONENT = 2.0
-BOT_BUILD = "mapeo-range-v2"
+BOT_BUILD = "mapeo-range-v3"
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
 
@@ -1475,13 +1475,11 @@ def parse_snapshot_datetime(value):
 
 def normalize_mapeo_snapshot_range(snapshot):
     analysis_end = parse_snapshot_datetime(snapshot[3]) or parse_snapshot_datetime(snapshot[1])
-    analysis_start = parse_snapshot_datetime(snapshot[2])
-    used_fallback = False
     if not analysis_end:
         analysis_end = datetime.now(timezone.utc)
-    if not analysis_start or analysis_start >= analysis_end:
-        analysis_start = analysis_end - timedelta(days=7)
-        used_fallback = True
+    analysis_start = analysis_end - timedelta(days=7)
+    stored_start = parse_snapshot_datetime(snapshot[2])
+    used_fallback = not stored_start or abs((stored_start - analysis_start).total_seconds()) > 60
     return analysis_start, analysis_end, used_fallback
 
 
@@ -1548,7 +1546,7 @@ def build_mapeo_analysis_embed(
     if range_fallback:
         embed.add_field(
             name="Rango corregido",
-            value="El cierre tenia inicio y fin iguales; use automaticamente los 7 dias anteriores al cierre.",
+            value="Use automaticamente los 7 dias anteriores al fin del cierre, sin confiar en el inicio guardado.",
             inline=False,
         )
     embed.add_field(
@@ -4263,9 +4261,13 @@ def get_priority_role(interaction: discord.Interaction):
 
 
 def archive_current_weekly_ranking(reason: str):
+    period_end = datetime.now(timezone.utc)
+    period_start = current_weekly_ranking_start()
+    if period_end - period_start < timedelta(days=1):
+        period_start = period_start - timedelta(days=7)
     return create_ranking_snapshot(
-        current_weekly_ranking_start(),
-        datetime.now(timezone.utc),
+        period_start,
+        period_end,
         reason,
     )
 
