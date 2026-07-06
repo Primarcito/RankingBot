@@ -18,6 +18,27 @@ EVENT_LABELS = {
     "relock": ("relock added",),
 }
 
+PLAYER_LABELS = (
+    "Created By",
+    "Added By",
+    "Submitted By",
+    "Registered By",
+    "Mapped By",
+    "Scouted By",
+    "Creator",
+    "Author",
+    "User",
+    "Player",
+    "Scout",
+    "Mapeador",
+    "Usuario",
+    "Jugador",
+    "Creado Por",
+    "Agregado Por",
+    "Anadido Por",
+    "Añadido Por",
+)
+
 
 @dataclass
 class MappingEvent:
@@ -40,7 +61,7 @@ def parse_mapping_message(message):
         return None
 
     fields = message_fields(message)
-    player_text = field_value(fields, "Created By", "Added By") or labeled_value(text, "Created By", "Added By")
+    player_text = extract_player_text(message, fields, text)
     player, discord_id = parse_player(player_text)
 
     created_at = getattr(message, "created_at", None)
@@ -195,6 +216,43 @@ def field_value(fields, *labels):
         value = fields.get(normalize_label(label))
         if value:
             return value
+    return ""
+
+
+def extract_player_text(message, fields, text):
+    player_text = field_value(fields, *PLAYER_LABELS) or labeled_value(text, *PLAYER_LABELS)
+    if player_text:
+        return player_text
+
+    player_text = inline_player_value(text)
+    if player_text:
+        return player_text
+
+    mentions = [
+        mention for mention in getattr(message, "mentions", [])
+        if not getattr(mention, "bot", False)
+    ]
+    if mentions:
+        mention = mentions[0]
+        display = getattr(mention, "display_name", None) or getattr(mention, "global_name", None) or getattr(mention, "name", "")
+        return f"{display} ({getattr(mention, 'id', '')})"
+
+    return ""
+
+
+def inline_player_value(text):
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    patterns = (
+        r"^(?:road|priority|relock)\s+added\s+by\s+(.+)$",
+        r"^(?:road|priority|relock)\s+agregado\s+por\s+(.+)$",
+        r"^(?:created|added|submitted|registered|mapped|scouted)\s+by\s*:?\s*(.+)$",
+        r"^(?:creado|agregado|anadido|añadido|registrado|mapeado|scouteado)\s+por\s*:?\s*(.+)$",
+    )
+    for line in lines:
+        for pattern in patterns:
+            match = re.match(pattern, line, re.IGNORECASE)
+            if match:
+                return match.group(1)
     return ""
 
 

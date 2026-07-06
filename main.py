@@ -1637,7 +1637,7 @@ def build_mapeo_analysis_embed(
         name="Criterio",
         value=(
             "Solo la primera ruta `From -> To` cuenta como ruta util. "
-            "Duplicados suman `0`. El mejor aporte recibe el tope de unidades; los aportes menores bajan con curva exponencial y el bot multiplica esas unidades por el valor de Mapeo."
+            "Duplicados suman `0`. El mejor aporte recibe el tope de unidades; los aportes menores se calculan proporcionalmente al peso del top y el bot multiplica esas unidades por el valor de Mapeo."
         ),
         inline=False,
     )
