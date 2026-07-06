@@ -4227,6 +4227,24 @@ def build_priority_mention_chunks(mentions: list[str], header: str, max_length: 
     return chunks
 
 
+def build_priority_embed_line_chunks(lines: list[str], max_length: int = 950):
+    chunks = []
+    current = []
+    current_length = 0
+    for line in lines:
+        extra = len(line) + (1 if current else 0)
+        if current and current_length + extra > max_length:
+            chunks.append(current)
+            current = [line]
+            current_length = len(line)
+        else:
+            current.append(line)
+            current_length += extra
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
     winners = priority_post_winners(result)
     mentions = [f"<@{item['user_id']}>" for item in winners]
@@ -4238,9 +4256,9 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
     )
     content_chunks = build_priority_mention_chunks(mentions, header)
 
-    top_lines = [
+    winner_lines = [
         f"`#{index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
-        for index, item in enumerate(winners[:12], start=1)
+        for index, item in enumerate(winners, start=1)
     ]
     embed = discord.Embed(
         title="Prio semanal",
@@ -4252,15 +4270,19 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
         ),
         color=COLOR_RANKING,
     )
-    embed.add_field(
-        name="Ganadores",
-        value="\n".join(top_lines) if top_lines else "Nadie alcanzo el corte.",
-        inline=False,
-    )
-    if len(winners) > len(top_lines):
+    line_chunks = build_priority_embed_line_chunks(winner_lines)
+    if line_chunks:
+        for index, chunk in enumerate(line_chunks[:20], start=1):
+            start = sum(len(previous) for previous in line_chunks[:index - 1]) + 1
+            end = start + len(chunk) - 1
+            name = "Ganadores" if len(line_chunks) == 1 else f"Ganadores {start}-{end}"
+            embed.add_field(name=name, value="\n".join(chunk), inline=False)
+    else:
+        embed.add_field(name="Ganadores", value="Nadie alcanzo el corte.", inline=False)
+    if len(line_chunks) > 20:
         embed.add_field(
-            name="Lista completa",
-            value=f"Se pinguearon {len(winners)} ganadores en el mensaje.",
+            name="Lista continua",
+            value="La lista completa fue pingueada en el texto del mensaje.",
             inline=False,
         )
     embed.set_footer(text="Prio aplicada desde el panel semanal.")
