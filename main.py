@@ -4275,7 +4275,12 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict):
         for index, chunk in enumerate(line_chunks[:20], start=1):
             start = sum(len(previous) for previous in line_chunks[:index - 1]) + 1
             end = start + len(chunk) - 1
-            name = "Ganadores" if len(line_chunks) == 1 else f"Ganadores {start}-{end}"
+            if len(line_chunks) == 1:
+                name = "Ganadores"
+            elif start == end:
+                name = f"Ganador {start}"
+            else:
+                name = f"Ganadores {start}-{end}"
             embed.add_field(name=name, value="\n".join(chunk), inline=False)
     else:
         embed.add_field(name="Ganadores", value="Nadie alcanzo el corte.", inline=False)
