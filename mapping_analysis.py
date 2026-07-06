@@ -289,7 +289,7 @@ def display_row_player(row):
     if player and not player.startswith("<@"):
         return player
     discord_id = row.get("discord_id", "")
-    return f"Usuario {discord_id[-4:]}" if discord_id else "Desconocido"
+    return f"ID {discord_id[-4:]}" if discord_id else "Sin nombre"
 
 
 def format_score(score):

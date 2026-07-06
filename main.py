@@ -94,8 +94,8 @@ MAPEO_MAX_WEEKLY_UNITS = 25
 MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
-MAPEO_SCALING_EXPONENT = 2.0
-BOT_BUILD = "mapeo-checkpoint-v4"
+MAPEO_SCALING_EXPONENT = 1.0
+BOT_BUILD = "mapeo-lineal-v5"
 PRIO_POST_CHANNEL_ID = 1505949944043929651
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
@@ -1605,7 +1605,7 @@ def build_mapeo_analysis_embed(
             f"Valor Mapeo: `{mapeo_value}` pt por unidad\n"
             f"Tope mejor aporte: `{max_units}` unidades x `{mapeo_value}` pt Mapeo = `{max_units * mapeo_value}` pts\n"
             f"Pesos: `Road {mapping_analysis.format_score(road_weight)} | Priority {mapping_analysis.format_score(priority_weight)} | RELOCK {mapping_analysis.format_score(relock_weight)}`\n"
-            f"Curva: `exponencial x{mapping_analysis.format_score(MAPEO_SCALING_EXPONENT)}`\n"
+            f"Curva: `proporcional lineal`\n"
             f"Peso top: `{mapping_analysis.format_score(top_weight)}` | Peso total: `{mapping_analysis.format_score(total_weight)}`"
         ),
         inline=False,
