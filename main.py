@@ -95,6 +95,7 @@ MAPEO_ROAD_WEIGHT = 1.0
 MAPEO_PRIORITY_WEIGHT = 0.15
 MAPEO_RELOCK_WEIGHT = 0.15
 MAPEO_SCALING_EXPONENT = 2.0
+BOT_BUILD = "mapeo-range-v2"
 DEFAULT_INACTIVE_MAX_POINTS = 0
 INACTIVE_REPORT_LIMIT = 25
 
@@ -1399,8 +1400,10 @@ async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual
 
     if not events:
         range_end = f" hasta `{analysis_end.strftime('%Y-%m-%d %H:%M UTC')}`" if analysis_end else ""
+        fallback_text = " Rango corregido automaticamente a 7 dias." if target.get("range_fallback") else ""
         await interaction.followup.send(
             f"No encontre eventos validos de mapeo desde `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`{range_end}."
+            f"{fallback_text} Build `{BOT_BUILD}`."
         )
         return
 
@@ -1413,6 +1416,7 @@ async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual
             MAPEO_MAX_WEEKLY_UNITS,
             analysis_end=analysis_end,
             target_label=target["label"],
+            range_fallback=target.get("range_fallback", False),
         ),
         view=MapeoAnalysisView(
             analysis,
@@ -1422,6 +1426,7 @@ async def analizar_mapeo(interaction: discord.Interaction, fuente: str = "actual
             analysis_end,
             target["snapshot_id"],
             target["label"],
+            target.get("range_fallback", False),
         ),
     )
 
@@ -1471,11 +1476,13 @@ def parse_snapshot_datetime(value):
 def normalize_mapeo_snapshot_range(snapshot):
     analysis_end = parse_snapshot_datetime(snapshot[3]) or parse_snapshot_datetime(snapshot[1])
     analysis_start = parse_snapshot_datetime(snapshot[2])
+    used_fallback = False
     if not analysis_end:
         analysis_end = datetime.now(timezone.utc)
     if not analysis_start or analysis_start >= analysis_end:
         analysis_start = analysis_end - timedelta(days=7)
-    return analysis_start, analysis_end
+        used_fallback = True
+    return analysis_start, analysis_end, used_fallback
 
 
 def get_mapeo_count_target(source: str = "actual"):
@@ -1485,12 +1492,13 @@ def get_mapeo_count_target(source: str = "actual"):
         if not snapshot:
             return {"missing": True}
 
-        analysis_start, analysis_end = normalize_mapeo_snapshot_range(snapshot)
+        analysis_start, analysis_end, range_fallback = normalize_mapeo_snapshot_range(snapshot)
         return {
             "snapshot_id": int(snapshot[0]),
             "label": f"Cierre semanal #{snapshot[0]} ({snapshot[3]})",
             "analysis_start": analysis_start,
             "analysis_end": analysis_end,
+            "range_fallback": range_fallback,
             "missing": False,
         }
 
@@ -1500,6 +1508,7 @@ def get_mapeo_count_target(source: str = "actual"):
         "label": "Ranking actual",
         "analysis_start": get_mapeo_analysis_start(week_start),
         "analysis_end": None,
+        "range_fallback": False,
         "missing": False,
     }
 
@@ -1514,6 +1523,7 @@ def build_mapeo_analysis_embed(
     relock_weight: float = MAPEO_RELOCK_WEIGHT,
     analysis_end: datetime | None = None,
     target_label: str = "Ranking actual",
+    range_fallback: bool = False,
     status_text: str | None = None,
     color: int = COLOR_WARNING,
 ):
@@ -1530,10 +1540,17 @@ def build_mapeo_analysis_embed(
             f"Desde: `{analysis_start.strftime('%Y-%m-%d %H:%M UTC')}`\n"
             f"Hasta: `{analysis_end.strftime('%Y-%m-%d %H:%M UTC') if analysis_end else 'ahora'}`\n"
             f"Mensajes revisados: `{scanned}`\n"
-            f"Eventos detectados: `{summary['total_events']}`"
+            f"Eventos detectados: `{summary['total_events']}`\n"
+            f"Build: `{BOT_BUILD}`"
         ),
         color=color,
     )
+    if range_fallback:
+        embed.add_field(
+            name="Rango corregido",
+            value="El cierre tenia inicio y fin iguales; use automaticamente los 7 dias anteriores al cierre.",
+            inline=False,
+        )
     embed.add_field(
         name="Parametros",
         value=(
@@ -1639,6 +1656,7 @@ class MapeoAnalysisView(SafeView):
         analysis_end: datetime | None = None,
         target_snapshot_id: int | None = None,
         target_label: str = "Ranking actual",
+        range_fallback: bool = False,
     ):
         super().__init__(timeout=1800)
         self.analysis = analysis
@@ -1648,6 +1666,7 @@ class MapeoAnalysisView(SafeView):
         self.analysis_end = analysis_end
         self.target_snapshot_id = target_snapshot_id
         self.target_label = target_label
+        self.range_fallback = range_fallback
 
     @discord.ui.button(label="Enviar a administrar evidencias", style=discord.ButtonStyle.success)
     async def send_to_review(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1672,6 +1691,7 @@ class MapeoAnalysisView(SafeView):
             MAPEO_MAX_WEEKLY_UNITS,
             analysis_end=self.analysis_end,
             target_label=self.target_label,
+            range_fallback=self.range_fallback,
             status_text=f"Pendiente de aprobacion. Enviado por {interaction.user.mention}",
         )
         review_view = MapeoReviewView(
@@ -1682,6 +1702,7 @@ class MapeoAnalysisView(SafeView):
             self.analysis_end,
             self.target_snapshot_id,
             self.target_label,
+            self.range_fallback,
         )
         review_message = await review_channel.send(embed=embed, view=review_view)
         review_view.message = review_message
@@ -1697,6 +1718,7 @@ class MapeoAnalysisView(SafeView):
                 MAPEO_MAX_WEEKLY_UNITS,
                 analysis_end=self.analysis_end,
                 target_label=self.target_label,
+                range_fallback=self.range_fallback,
             ),
             view=self,
         )
@@ -1712,6 +1734,7 @@ class MapeoReviewView(SafeView):
         analysis_end: datetime | None = None,
         target_snapshot_id: int | None = None,
         target_label: str = "Ranking actual",
+        range_fallback: bool = False,
         max_units: int = MAPEO_MAX_WEEKLY_UNITS,
         road_weight: float = MAPEO_ROAD_WEIGHT,
         priority_weight: float = MAPEO_PRIORITY_WEIGHT,
@@ -1725,6 +1748,7 @@ class MapeoReviewView(SafeView):
         self.analysis_end = analysis_end
         self.target_snapshot_id = target_snapshot_id
         self.target_label = target_label
+        self.range_fallback = range_fallback
         self.max_units = max_units
         self.road_weight = road_weight
         self.priority_weight = priority_weight
@@ -1742,6 +1766,7 @@ class MapeoReviewView(SafeView):
             self.relock_weight,
             analysis_end=self.analysis_end,
             target_label=self.target_label,
+            range_fallback=self.range_fallback,
             status_text=status_text,
             color=color,
         )
