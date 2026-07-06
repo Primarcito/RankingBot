@@ -1440,15 +1440,26 @@ async def enrich_mapping_event_player(guild: discord.Guild, event):
     if not event.discord_id:
         return
 
-    member = guild.get_member(int(event.discord_id))
-    if not member:
+    user_id = int(event.discord_id)
+    member = guild.get_member(user_id) if guild else None
+    if not member and guild:
         try:
-            member = await guild.fetch_member(int(event.discord_id))
+            member = await guild.fetch_member(user_id)
         except (discord.HTTPException, ValueError):
             member = None
 
     if member and not member.bot:
         event.player = member.display_name
+        return
+
+    user = bot.get_user(user_id)
+    if not user:
+        try:
+            user = await bot.fetch_user(user_id)
+        except (discord.HTTPException, ValueError):
+            user = None
+    if user and not user.bot:
+        event.player = getattr(user, "global_name", None) or user.name
 
 
 def get_mapeo_analysis_start(week_start: datetime):
