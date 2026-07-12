@@ -70,6 +70,7 @@ from permissions import can_review_member, is_admin, is_gm_member
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
 import mapping_analysis
+from scouteo_scoring import calculate_scouteo_records, parse_multiplier_hundredths
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -609,25 +610,15 @@ def extract_scouteo_summary_records(message: discord.Message):
         hours = int(time_match.group(1) or 0)
         minutes = int(time_match.group(2))
         maps = int(maps_match.group(1))
+        multiplier_hundredths = parse_multiplier_hundredths(line[time_match.end():])
         records.append({
             "name": name,
             "hours": hours,
             "minutes": minutes,
             "maps": maps,
+            "multiplier_hundredths": multiplier_hundredths,
         })
     return records
-
-def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_per_point: int):
-    calculated = []
-    for record in records:
-        item = dict(record)
-        hour_points = ((item["hours"] * 60) + item["minutes"]) // (hours_per_point * 60)
-        map_points = item["maps"] // maps_per_point
-        item["hour_points"] = hour_points
-        item["map_points"] = map_points
-        item["total"] = hour_points + map_points
-        calculated.append(item)
-    return calculated
 
 def combine_scouteo_records(records: list[dict]):
     if not records:
@@ -638,6 +629,8 @@ def combine_scouteo_records(records: list[dict]):
             "maps": 0,
             "hour_points": 0,
             "map_points": 0,
+            "base_total": 0,
+            "multiplier_hundredths": 100,
             "total": 0,
             "source_names": [],
         }
@@ -651,6 +644,8 @@ def combine_scouteo_records(records: list[dict]):
         "maps": sum(record["maps"] for record in records),
         "hour_points": sum(record["hour_points"] for record in records),
         "map_points": sum(record["map_points"] for record in records),
+        "base_total": sum(record.get("base_total", record["total"]) for record in records),
+        "multiplier_hundredths": min(record.get("multiplier_hundredths", 100) for record in records),
         "total": sum(record["total"] for record in records),
         "source_names": source_names,
     }
@@ -674,10 +669,13 @@ def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, u
         if len(source_names) > 4:
             source_text += f" +{len(source_names) - 4}"
 
+    multiplier = record.get("multiplier_hundredths", 100) / 100
+    base_total = record.get("base_total", cantidad)
     return (
         f"<@{user_id}> - `{cantidad * unit_points}` pts "
         f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas; "
-        f"{record['hour_points']} por horas + {record['map_points']} por mapas"
+        f"{record['hour_points']} por horas + {record['map_points']} por mapas = {base_total} base; "
+        f"x{multiplier:.2f} -> {cantidad} unidades"
         f"{source_text})"
     )
 
@@ -693,7 +691,11 @@ async def handle_scouteo_summary_message(message: discord.Message):
     if get_evidence_activity(message) != "scouteo":
         return False
 
-    records = extract_scouteo_summary_records(message)
+    try:
+        records = extract_scouteo_summary_records(message)
+    except ValueError as err:
+        print(f"[SCOUTEO SUMMARY] ignorado: {err}")
+        return False
     if not records:
         return False
 
@@ -1043,7 +1045,11 @@ async def conteo(interaction: discord.Interaction, id_mensaje: str, fuente: str 
         await interaction.response.send_message("Ese mensaje no esta en un canal configurado como scouteo.", ephemeral=True)
         return
 
-    records = extract_scouteo_summary_records(source_message)
+    try:
+        records = extract_scouteo_summary_records(source_message)
+    except ValueError as err:
+        await interaction.response.send_message(str(err), ephemeral=True)
+        return
     if not records:
         await interaction.response.send_message("No pude leer nombres, horas y mapas en ese resumen.", ephemeral=True)
         return
@@ -1226,8 +1232,8 @@ def format_scouteo_count_table(records: list[dict], unit_points: int):
         return "Sin puntos calculados."
 
     lines = [
-        "Scout        Tiempo  Map Hrs Mps Ud Pts",
-        "------------ ------- --- --- --- -- ---",
+        "Scout        Tiempo  Map Hrs Mps  x   Ud Pts",
+        "------------ ------- --- --- --- ---- -- ---",
     ]
     for record in records[:12]:
         name = record["name"][:12].ljust(12)
@@ -1235,9 +1241,10 @@ def format_scouteo_count_table(records: list[dict], unit_points: int):
         maps = str(record["maps"]).rjust(3)
         hour_points = str(record["hour_points"]).rjust(3)
         map_points = str(record["map_points"]).rjust(3)
+        multiplier = f"{record.get('multiplier_hundredths', 100) / 100:.2f}".rjust(4)
         total = str(record["total"]).rjust(2)
         points = str(record["total"] * unit_points).rjust(3)
-        lines.append(f"{name} {time_text} {maps} {hour_points} {map_points} {total} {points}")
+        lines.append(f"{name} {time_text} {maps} {hour_points} {map_points} {multiplier} {total} {points}")
 
     if len(records) > 12:
         lines.append(f"... y {len(records) - 12} mas")
