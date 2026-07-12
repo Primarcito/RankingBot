@@ -40,3 +40,26 @@ def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_pe
         item["total"] = (base_total * multiplier) // 100
         calculated.append(item)
     return calculated
+
+
+def format_scouteo_summary(record: dict, units: int, unit_points: int) -> str:
+    hours = int(record.get("hours", 0))
+    minutes = int(record.get("minutes", 0))
+    if hours and minutes:
+        time_text = f"{hours}h{minutes:02d}"
+    elif hours:
+        time_text = f"{hours}h"
+    else:
+        time_text = f"{minutes}m"
+
+    multiplier = int(record.get("multiplier_hundredths", 100))
+    base_units = int(record.get("base_total", units))
+    if multiplier < 100:
+        units_text = f"{units}/{base_units}u · x{multiplier / 100:.2f}"
+    else:
+        units_text = f"{units}u"
+
+    return (
+        f"{units * unit_points} pts · {units_text} · "
+        f"{time_text} · {int(record.get('maps', 0))} mapas"
+    )

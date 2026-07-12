@@ -70,7 +70,11 @@ from permissions import can_review_member, is_admin, is_gm_member
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
 import mapping_analysis
-from scouteo_scoring import calculate_scouteo_records, parse_multiplier_hundredths
+from scouteo_scoring import (
+    calculate_scouteo_records,
+    format_scouteo_summary,
+    parse_multiplier_hundredths,
+)
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -654,8 +658,8 @@ def format_unresolved_scouteo_records(records: list[dict], unit_points: int):
     lines = []
     for record in records[:20]:
         lines.append(
-            f"`{record['name']}` - `{record['total'] * unit_points}` pts "
-            f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas)"
+            f"`{record['name']}` — "
+            f"{format_scouteo_summary(record, record['total'], unit_points)}"
         )
     if len(records) > 20:
         lines.append(f"... y {len(records) - 20} mas")
@@ -669,15 +673,9 @@ def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, u
         if len(source_names) > 4:
             source_text += f" +{len(source_names) - 4}"
 
-    multiplier = record.get("multiplier_hundredths", 100) / 100
-    base_total = record.get("base_total", cantidad)
-    return (
-        f"<@{user_id}> - `{cantidad * unit_points}` pts "
-        f"({record['hours']}h {record['minutes']}m, {record['maps']} mapas; "
-        f"{record['hour_points']} por horas + {record['map_points']} por mapas = {base_total} base; "
-        f"x{multiplier:.2f} -> {cantidad} unidades"
-        f"{source_text})"
-    )
+    if source_text:
+        source_text = source_text.replace("; nombres: ", " · alias: ")
+    return f"<@{user_id}> — {format_scouteo_summary(record, cantidad, unit_points)}{source_text}"
 
 def extract_scouteo_summary_name(text: str):
     candidates = [
@@ -783,14 +781,10 @@ async def create_scouteo_count_review(
         title="Evidencia pendiente",
         color=COLOR_WARNING,
         description=(
-            f"Usuario: {message.author.mention}\n"
-            f"Actividad: **{ACTIVIDADES['scouteo']['label']}**\n"
-            f"Origen: **Resumen del Dia**\n"
-            f"Destino: **{target_label}**\n"
-            f"Reglas: `{hours_per_point}h = 1 punto | {maps_per_point} mapas = 1 punto`\n"
-            f"Total calculado: `{sum(row[2] for row in participant_rows) * pts}` pts\n"
-            f"Canal: {message.channel.mention}\n"
-            f"[Abrir evidencia]({message.jump_url})"
+            f"**{ACTIVIDADES['scouteo']['label']}** · Resumen del Día → **{target_label}**\n"
+            f"`{hours_per_point}h / {maps_per_point} mapas = 1u` · "
+            f"**{sum(row[2] for row in participant_rows) * pts} pts**\n"
+            f"{message.channel.mention} · [Abrir evidencia]({message.jump_url})"
         )
     )
     participant_text = "\n".join(
