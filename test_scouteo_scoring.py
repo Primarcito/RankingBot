@@ -2,6 +2,7 @@ import unittest
 
 from scouteo_scoring import (
     calculate_scouteo_records,
+    calculate_scouteo_points,
     format_scouteo_summary,
     parse_multiplier_hundredths,
 )
@@ -21,11 +22,12 @@ class ScouteoScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_multiplier_hundredths("x0.65")
 
-    def test_penalty_is_applied_once_to_integer_units(self):
+    def test_penalty_keeps_base_units_and_applies_to_final_points(self):
         records = [{"name": "Scout", "hours": 10, "minutes": 0, "maps": 12, "multiplier_hundredths": 95}]
         result = calculate_scouteo_records(records, hours_per_point=5, maps_per_point=3)[0]
         self.assertEqual(result["base_total"], 6)
-        self.assertEqual(result["total"], 5)
+        self.assertEqual(result["total"], 6)
+        self.assertEqual(calculate_scouteo_points(result["total"], 5, 95), 29)
 
     def test_multiplier_never_increases_units(self):
         records = [{"name": "Scout", "hours": 10, "minutes": 0, "maps": 12, "multiplier_hundredths": 100}]
@@ -39,7 +41,7 @@ class ScouteoScoringTests(unittest.TestCase):
             "35 pts · 7u · 12h46 · 13 mapas",
         )
 
-    def test_compact_summary_shows_penalty_and_lost_units(self):
+    def test_compact_summary_shows_proportional_penalty(self):
         record = {
             "hours": 10,
             "minutes": 0,
@@ -48,9 +50,13 @@ class ScouteoScoringTests(unittest.TestCase):
             "multiplier_hundredths": 95,
         }
         self.assertEqual(
-            format_scouteo_summary(record, units=5, unit_points=5),
-            "25 pts · 5/6u · x0.95 · 10h · 12 mapas",
+            format_scouteo_summary(record, units=6, unit_points=5),
+            "29 pts · 6u · x0.95 · 10h · 12 mapas",
         )
+
+    def test_final_points_use_half_up_rounding(self):
+        self.assertEqual(calculate_scouteo_points(6, 5, 95), 29)
+        self.assertEqual(calculate_scouteo_points(2, 5, 95), 10)
 
 
 if __name__ == "__main__":

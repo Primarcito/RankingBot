@@ -37,13 +37,16 @@ def init_db():
                 kill_pelea INTEGER DEFAULT 0,
                 limpieza_aspecto INTEGER DEFAULT 0,
                 scouteo INTEGER DEFAULT 0,
-                mapeo INTEGER DEFAULT 0
+                mapeo INTEGER DEFAULT 0,
+                points_adjustment INTEGER DEFAULT 0
             )
         """)
         c.execute("PRAGMA table_info(scouts)")
         scout_cols = [row[1] for row in c.fetchall()]
         if "kill_pelea" not in scout_cols:
             c.execute("ALTER TABLE scouts ADD COLUMN kill_pelea INTEGER DEFAULT 0")
+        if "points_adjustment" not in scout_cols:
+            c.execute("ALTER TABLE scouts ADD COLUMN points_adjustment INTEGER DEFAULT 0")
         if "kill_persona" in scout_cols:
             c.execute("UPDATE scouts SET kill_pelea = kill_pelea + kill_persona")
         c.execute("""
@@ -83,6 +86,7 @@ def init_db():
                 user_id TEXT,
                 username TEXT,
                 cantidad INTEGER DEFAULT 1,
+                points_override INTEGER,
                 PRIMARY KEY (message_id, user_id)
             )
         """)
@@ -140,6 +144,8 @@ def init_db():
         participant_cols = [row[1] for row in c.fetchall()]
         if "cantidad" not in participant_cols:
             c.execute("ALTER TABLE evidence_participants ADD COLUMN cantidad INTEGER DEFAULT 1")
+        if "points_override" not in participant_cols:
+            c.execute("ALTER TABLE evidence_participants ADD COLUMN points_override INTEGER")
         # Valores por defecto de configuración
         defaults = list(DEFAULT_ACTIVITY_POINTS.items())
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
@@ -259,6 +265,7 @@ def create_evidence_review(
             )
         for participant in participants:
             participant_id, participant_name, cantidad = normalize_participant_entry(participant)
+            points_override = int(participant[3]) if len(participant) >= 4 and participant[3] is not None else None
             if not target_snapshot_id:
                 conn.execute(
                     "INSERT OR IGNORE INTO scouts (user_id, username) VALUES (?, ?)",
@@ -267,10 +274,10 @@ def create_evidence_review(
                 conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (participant_name, str(participant_id)))
             conn.execute(
                 """
-                INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username, cantidad)
-                VALUES (?,?,?,?)
+                INSERT OR IGNORE INTO evidence_participants (message_id, user_id, username, cantidad, points_override)
+                VALUES (?,?,?,?,?)
                 """,
-                (message_id, str(participant_id), participant_name, cantidad)
+                (message_id, str(participant_id), participant_name, cantidad, points_override)
             )
         conn.commit()
     return puntos_unit
@@ -405,15 +412,16 @@ def approve_evidence(message_id: str):
         user_id, actividad, _, _, review_message_id, target_snapshot_id = row
         puntos = get_puntos(actividad)
         participants = conn.execute(
-            "SELECT user_id, username, cantidad FROM evidence_participants WHERE message_id=?",
+            "SELECT user_id, username, cantidad, points_override FROM evidence_participants WHERE message_id=?",
             (message_id,)
         ).fetchall()
         if not participants:
             scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
-            participants = [(user_id, scout[0] if scout else user_id, 1)]
+            participants = [(user_id, scout[0] if scout else user_id, 1, None)]
 
-        for participant_id, username, cantidad in participants:
+        for participant_id, username, cantidad, points_override in participants:
             cantidad = max(1, int(cantidad or 1))
+            exact_points = int(points_override) if points_override is not None else puntos * cantidad
             if target_snapshot_id:
                 _apply_snapshot_activity(
                     conn,
@@ -423,6 +431,7 @@ def approve_evidence(message_id: str):
                     actividad,
                     cantidad,
                     puntos,
+                    exact_points,
                 )
             else:
                 conn.execute(
@@ -432,8 +441,12 @@ def approve_evidence(message_id: str):
                 conn.execute("UPDATE scouts SET username=? WHERE user_id=?", (username, str(participant_id)))
                 conn.execute(f"UPDATE scouts SET {actividad} = {actividad} + ? WHERE user_id=?", (cantidad, participant_id))
                 conn.execute(
+                    "UPDATE scouts SET points_adjustment = points_adjustment + ? WHERE user_id=?",
+                    (exact_points - (puntos * cantidad), participant_id),
+                )
+                conn.execute(
                     "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-                    (participant_id, username, actividad, cantidad, puntos * cantidad, datetime.utcnow().isoformat(), "evidencia_aprobada")
+                    (participant_id, username, actividad, cantidad, exact_points, datetime.utcnow().isoformat(), "evidencia_aprobada")
                 )
         conn.execute(
             "UPDATE evidence_messages SET status='approved' WHERE message_id=?",
@@ -492,19 +505,21 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
 
         points_unit = int(stored_points or get_puntos(actividad) or 0)
         participants = conn.execute(
-            "SELECT user_id, username, cantidad FROM evidence_participants WHERE message_id=?",
+            "SELECT user_id, username, cantidad, points_override FROM evidence_participants WHERE message_id=?",
             (str(message_id),),
         ).fetchall()
         if not participants:
             scout = conn.execute("SELECT username FROM scouts WHERE user_id=?", (user_id,)).fetchone()
-            participants = [(user_id, scout[0] if scout else user_id, 1)]
+            participants = [(user_id, scout[0] if scout else user_id, 1, None)]
 
         moved = []
         total_units = 0
         total_points = 0
-        for participant_id, username, cantidad in participants:
+        for participant_id, username, cantidad, points_override in participants:
             participant_id = str(participant_id)
             cantidad = max(1, int(cantidad or 1))
+            exact_points = int(points_override) if points_override is not None else points_unit * cantidad
+            evidence_adjustment = exact_points - (points_unit * cantidad)
             current_row = conn.execute(
                 f"SELECT {actividad} FROM scouts WHERE user_id=?",
                 (participant_id,),
@@ -515,6 +530,10 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
                     f"UPDATE scouts SET {actividad}=MAX(0, {actividad} - ?) WHERE user_id=?",
                     (cantidad, participant_id),
                 )
+                conn.execute(
+                    "UPDATE scouts SET points_adjustment = points_adjustment - ? WHERE user_id=?",
+                    (evidence_adjustment, participant_id),
+                )
             if removed_units:
                 conn.execute(
                     "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
@@ -523,7 +542,7 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
                         username,
                         actividad,
                         removed_units,
-                        points_unit * removed_units,
+                        exact_points,
                         datetime.utcnow().isoformat(),
                         f"mover_cierre_{snapshot_id}_resta_actual",
                     ),
@@ -537,16 +556,17 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
                 actividad,
                 cantidad,
                 points_unit,
+                exact_points,
             )
             moved.append({
                 "user_id": participant_id,
                 "username": username,
                 "units": cantidad,
                 "removed_units": removed_units,
-                "points": points_unit * cantidad,
+                "points": exact_points,
             })
             total_units += cantidad
-            total_points += points_unit * cantidad
+            total_points += exact_points
 
         conn.execute(
             "UPDATE evidence_messages SET target_snapshot_id=? WHERE message_id=?",
@@ -565,12 +585,21 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
         "review_message_id": review_message_id,
     }
 
-def _apply_snapshot_activity(conn, snapshot_id: int, user_id: str, username: str, actividad: str, cantidad: int, puntos_unit: int):
+def _apply_snapshot_activity(
+    conn,
+    snapshot_id: int,
+    user_id: str,
+    username: str,
+    actividad: str,
+    cantidad: int,
+    puntos_unit: int,
+    points_override: int | None = None,
+):
     if actividad not in ACTIVITY_COLUMNS:
         raise ValueError(f"Actividad no valida para cierre: {actividad}")
 
     cantidad = max(1, int(cantidad or 1))
-    delta_points = int(puntos_unit or 0) * cantidad
+    delta_points = int(points_override) if points_override is not None else int(puntos_unit or 0) * cantidad
     row = conn.execute(
         """
         SELECT total_puntos
@@ -981,12 +1010,17 @@ COLS = ["kill_scout","kill_pelea","limpieza_aspecto","scouteo","mapeo"]
 def scout_select_sql(where_clause: str = ""):
     return "SELECT user_id, username, kill_scout, kill_pelea, limpieza_aspecto, scouteo, mapeo FROM scouts " + where_clause
 
+def get_points_adjustment(user_id: str) -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT points_adjustment FROM scouts WHERE user_id=?", (str(user_id),)).fetchone()
+    return int(row[0] or 0) if row else 0
+
 def calc_puntos_totales(row) -> int:
     config = {a: p for a, p in get_all_config()}
     total = 0
     for i, col in enumerate(COLS):
         total += row[i + 2] * config.get(col, 0)
-    return total
+    return max(0, total + get_points_adjustment(row[0]))
 
 def get_nivel(puntos: int) -> tuple[str, str]:
     points = max(0, int(puntos or 0))

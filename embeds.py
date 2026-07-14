@@ -7,6 +7,7 @@ from database import (
     get_all_scouts,
     get_nivel,
     get_pending_count,
+    get_points_adjustment,
     get_scout,
     get_today_evidence_count,
 )
@@ -220,5 +221,8 @@ def build_perfil_embed(user_id: str, display_name: str) -> discord.Embed:
         meta = ACTIVIDADES[key]
         count = scout[index]
         lines.append(f"{meta['emoji']} {meta['label']}: **{count}x** -> `{count * points_config.get(key, 0)} pts`")
+    adjustment = get_points_adjustment(user_id)
+    if adjustment:
+        lines.append(f"📉 Ajuste por multiplicadores: **{adjustment:+d} pt**")
     embed.add_field(name="📋 Actividades", value="\n".join(lines), inline=False)
     return embed

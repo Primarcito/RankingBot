@@ -72,6 +72,7 @@ import participants as participant_tools
 import mapping_analysis
 from scouteo_scoring import (
     calculate_scouteo_records,
+    calculate_scouteo_points,
     format_scouteo_summary,
     parse_multiplier_hundredths,
 )
@@ -636,6 +637,7 @@ def combine_scouteo_records(records: list[dict]):
             "base_total": 0,
             "multiplier_hundredths": 100,
             "total": 0,
+            "calculated_points": 0,
             "source_names": [],
         }
 
@@ -651,6 +653,7 @@ def combine_scouteo_records(records: list[dict]):
         "base_total": sum(record.get("base_total", record["total"]) for record in records),
         "multiplier_hundredths": min(record.get("multiplier_hundredths", 100) for record in records),
         "total": sum(record["total"] for record in records),
+        "calculated_points": sum(record.get("calculated_points", 0) for record in records),
         "source_names": source_names,
     }
 
@@ -659,13 +662,13 @@ def format_unresolved_scouteo_records(records: list[dict], unit_points: int):
     for record in records[:20]:
         lines.append(
             f"`{record['name']}` — "
-            f"{format_scouteo_summary(record, record['total'], unit_points)}"
+            f"{format_scouteo_summary(record, record['total'], unit_points, record.get('calculated_points'))}"
         )
     if len(records) > 20:
         lines.append(f"... y {len(records) - 20} mas")
     return "\n".join(lines)
 
-def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, unit_points: int):
+def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, unit_points: int, points: int):
     source_names = record.get("source_names") or [record["name"]]
     source_text = ""
     if len(source_names) > 1:
@@ -675,7 +678,7 @@ def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, u
 
     if source_text:
         source_text = source_text.replace("; nombres: ", " · alias: ")
-    return f"<@{user_id}> — {format_scouteo_summary(record, cantidad, unit_points)}{source_text}"
+    return f"<@{user_id}> — {format_scouteo_summary(record, cantidad, unit_points, points)}{source_text}"
 
 def extract_scouteo_summary_name(text: str):
     candidates = [
@@ -721,12 +724,18 @@ async def create_scouteo_count_review(
     target_snapshot_id: int | None = None,
     target_label: str = "Ranking actual",
 ):
+    unit_points = get_puntos("scouteo")
     participant_rows_by_user = {}
     unresolved_records = []
     suggested_participants = []
     for record in records:
         if record["total"] <= 0:
             continue
+        record["calculated_points"] = calculate_scouteo_points(
+            record["total"],
+            unit_points,
+            record.get("multiplier_hundredths", 100),
+        )
         participants, unresolved, suggestions = await participant_tools.resolve_names(
             message.guild,
             [record["name"]],
@@ -739,10 +748,12 @@ async def create_scouteo_count_review(
                     "user_id": user_id,
                     "display_name": display_name,
                     "cantidad": 0,
+                    "points": 0,
                     "records": [],
                 }
             participant_rows_by_user[user_id]["display_name"] = display_name
             participant_rows_by_user[user_id]["cantidad"] += record["total"]
+            participant_rows_by_user[user_id]["points"] += record["calculated_points"]
             participant_rows_by_user[user_id]["records"].append(record)
         else:
             unresolved_records.extend(dict(record, name=name) for name in unresolved)
@@ -754,6 +765,7 @@ async def create_scouteo_count_review(
             item["display_name"],
             item["cantidad"],
             combine_scouteo_records(item["records"]),
+            item["points"],
         )
         for item in participant_rows_by_user.values()
     ]
@@ -763,13 +775,13 @@ async def create_scouteo_count_review(
         print("[SCOUTEO SUMMARY] ignorado: sin participantes con puntos calculados")
         return False
 
-    owner_id, owner_name, _, _ = participant_rows[0]
+    owner_id, owner_name, _, _, _ = participant_rows[0]
     pts = create_evidence_review(
         str(message.id),
         owner_id,
         owner_name,
         "scouteo",
-        participant_rows,
+        [(user_id, name, units, points) for user_id, name, units, _, points in participant_rows],
         target_snapshot_id=target_snapshot_id,
     )
     if pts <= 0:
@@ -783,13 +795,13 @@ async def create_scouteo_count_review(
         description=(
             f"**{ACTIVIDADES['scouteo']['label']}** · Resumen del Día → **{target_label}**\n"
             f"`{hours_per_point}h / {maps_per_point} mapas = 1u` · "
-            f"**{sum(row[2] for row in participant_rows) * pts} pts**\n"
+            f"**{sum(row[4] for row in participant_rows)} pts**\n"
             f"{message.channel.mention} · [Abrir evidencia]({message.jump_url})"
         )
     )
     participant_text = "\n".join(
-        format_scouteo_participant_line(user_id, cantidad, record, pts)
-        for user_id, _, cantidad, record in participant_rows[:20]
+        format_scouteo_participant_line(user_id, cantidad, record, pts, points)
+        for user_id, _, cantidad, record, points in participant_rows[:20]
     )
     embed.add_field(name="Participantes", value=participant_text[:1000], inline=False)
     if unresolved_records:
@@ -1195,15 +1207,22 @@ def build_scouteo_count_embed(
     is_late_closure: bool = False,
 ):
     unit_points = get_puntos("scouteo")
-    total_units = sum(record["total"] for record in records)
+    total_points = sum(
+        calculate_scouteo_points(
+            record["total"],
+            unit_points,
+            record.get("multiplier_hundredths", 100),
+        )
+        for record in records
+    )
     embed = discord.Embed(
         title="Conteo de scouteo",
         description=(
             f"Mensaje: [abrir resumen]({source_message.jump_url})\n"
             f"Destino: **{target_label}**\n"
-            f"Reglas: `{hours_per_point}h = 1 punto | {maps_per_point} mapas = 1 punto`\n"
+            f"Reglas: `{hours_per_point}h = 1 unidad | {maps_per_point} mapas = 1 unidad`\n"
             f"Valor Scouteo: `{unit_points}` pts por unidad\n"
-            f"Total: `{total_units * unit_points}` pts"
+            f"Total: `{total_points}` pts"
         ),
         color=COLOR_WARNING,
     )
@@ -1237,7 +1256,9 @@ def format_scouteo_count_table(records: list[dict], unit_points: int):
         map_points = str(record["map_points"]).rjust(3)
         multiplier = f"{record.get('multiplier_hundredths', 100) / 100:.2f}".rjust(4)
         total = str(record["total"]).rjust(2)
-        points = str(record["total"] * unit_points).rjust(3)
+        points = str(calculate_scouteo_points(
+            record["total"], unit_points, record.get("multiplier_hundredths", 100)
+        )).rjust(3)
         lines.append(f"{name} {time_text} {maps} {hour_points} {map_points} {multiplier} {total} {points}")
 
     if len(records) > 12:
@@ -1336,7 +1357,7 @@ class ScouteoCountRuleModal(SafeModal):
     value = discord.ui.TextInput(label="Valor", placeholder="Ej: 5", max_length=3)
 
     def __init__(self, view: ScouteoCountView, target: str):
-        title = "Horas para 1 punto" if target == "hours" else "Mapas para 1 punto"
+        title = "Horas para 1 unidad" if target == "hours" else "Mapas para 1 unidad"
         super().__init__(title=title)
         self.view_ref = view
         self.target = target

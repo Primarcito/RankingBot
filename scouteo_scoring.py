@@ -36,13 +36,20 @@ def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_pe
         item["map_points"] = map_points
         item["base_total"] = base_total
         item["multiplier_hundredths"] = multiplier
-        # Las unidades son enteras en RankingBot. Floor garantiza que una penalizacion nunca premie.
-        item["total"] = (base_total * multiplier) // 100
+        # Las unidades se conservan completas. El multiplicador se aplica a los
+        # puntos finales para no quitar una unidad entera por una penalizacion leve.
+        item["total"] = base_total
         calculated.append(item)
     return calculated
 
 
-def format_scouteo_summary(record: dict, units: int, unit_points: int) -> str:
+def calculate_scouteo_points(base_units: int, unit_points: int, multiplier_hundredths: int = 100) -> int:
+    numerator = max(0, int(base_units)) * max(0, int(unit_points)) * int(multiplier_hundredths)
+    # Redondeo tradicional .5 hacia arriba, sin el redondeo bancario de round().
+    return (numerator + 50) // 100
+
+
+def format_scouteo_summary(record: dict, units: int, unit_points: int, points: int | None = None) -> str:
     hours = int(record.get("hours", 0))
     minutes = int(record.get("minutes", 0))
     if hours and minutes:
@@ -53,13 +60,15 @@ def format_scouteo_summary(record: dict, units: int, unit_points: int) -> str:
         time_text = f"{minutes}m"
 
     multiplier = int(record.get("multiplier_hundredths", 100))
-    base_units = int(record.get("base_total", units))
     if multiplier < 100:
-        units_text = f"{units}/{base_units}u · x{multiplier / 100:.2f}"
+        units_text = f"{units}u · x{multiplier / 100:.2f}"
     else:
         units_text = f"{units}u"
 
+    if points is None:
+        points = calculate_scouteo_points(units, unit_points, multiplier)
+
     return (
-        f"{units * unit_points} pts · {units_text} · "
+        f"{points} pts · {units_text} · "
         f"{time_text} · {int(record.get('maps', 0))} mapas"
     )
