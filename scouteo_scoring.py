@@ -25,15 +25,18 @@ def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_pe
     calculated = []
     for record in records:
         item = dict(record)
-        hour_points = ((item["hours"] * 60) + item["minutes"]) // (hours_per_point * 60)
-        map_points = item["maps"] // maps_per_point
-        base_total = hour_points + map_points
+        total_minutes = (item["hours"] * 60) + item["minutes"]
+        eligible = total_minutes >= hours_per_point * 60
+        hour_points = 0
+        map_points = item["maps"] // maps_per_point if eligible else 0
+        base_total = map_points
         multiplier = int(item.get("multiplier_hundredths", 100))
         if multiplier < 70 or multiplier > 100:
             raise ValueError(f"Multiplicador fuera del rango permitido: {multiplier}")
 
         item["hour_points"] = hour_points
         item["map_points"] = map_points
+        item["eligible_by_hours"] = eligible
         item["base_total"] = base_total
         item["multiplier_hundredths"] = multiplier
         # Las unidades se conservan completas. El multiplicador se aplica a los

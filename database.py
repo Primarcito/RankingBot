@@ -106,6 +106,27 @@ def init_db():
             )
         """)
         c.execute("""
+            CREATE TABLE IF NOT EXISTS scouteo_balances (
+                scope TEXT,
+                user_id TEXT,
+                minutes INTEGER DEFAULT 0,
+                maps INTEGER DEFAULT 0,
+                PRIMARY KEY (scope, user_id)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS scouteo_contributions (
+                message_id TEXT,
+                user_id TEXT,
+                minutes INTEGER DEFAULT 0,
+                maps INTEGER DEFAULT 0,
+                hours_required INTEGER DEFAULT 4,
+                maps_per_unit INTEGER DEFAULT 3,
+                multiplier_hundredths INTEGER DEFAULT 100,
+                PRIMARY KEY (message_id, user_id)
+            )
+        """)
+        c.execute("""
             CREATE TABLE IF NOT EXISTS ranking_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT,
@@ -397,6 +418,95 @@ def get_today_evidence_count() -> int:
         ).fetchone()
     return row[0] if row else 0
 
+def _scouteo_scope(target_snapshot_id=None) -> str:
+    return f"snapshot:{int(target_snapshot_id)}" if target_snapshot_id else "current"
+
+def get_scouteo_projection(
+    user_id: str,
+    minutes: int,
+    maps: int,
+    hours_required: int = 4,
+    maps_per_unit: int = 3,
+    target_snapshot_id=None,
+):
+    scope = _scouteo_scope(target_snapshot_id)
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT minutes, maps FROM scouteo_balances WHERE scope=? AND user_id=?",
+            (scope, str(user_id)),
+        ).fetchone()
+    previous_minutes, previous_maps = row or (0, 0)
+    total_minutes = max(0, int(previous_minutes or 0) + int(minutes or 0))
+    total_maps = max(0, int(previous_maps or 0) + int(maps or 0))
+    eligible = total_minutes >= max(1, int(hours_required)) * 60
+    units = total_maps // max(1, int(maps_per_unit)) if eligible else 0
+    return {
+        "previous_minutes": int(previous_minutes or 0),
+        "previous_maps": int(previous_maps or 0),
+        "total_minutes": total_minutes,
+        "total_maps": total_maps,
+        "eligible": eligible,
+        "units": units,
+        "remaining_maps": total_maps - (units * max(1, int(maps_per_unit))),
+    }
+
+def set_scouteo_contributions(message_id: str, contributions):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM scouteo_contributions WHERE message_id=?", (str(message_id),))
+        conn.executemany(
+            """
+            INSERT INTO scouteo_contributions (
+                message_id, user_id, minutes, maps, hours_required,
+                maps_per_unit, multiplier_hundredths
+            ) VALUES (?,?,?,?,?,?,?)
+            """,
+            [
+                (
+                    str(message_id), str(item[0]), max(0, int(item[1])), max(0, int(item[2])),
+                    max(1, int(item[3])), max(1, int(item[4])),
+                    max(70, min(100, int(item[5]))),
+                )
+                for item in contributions
+            ],
+        )
+        conn.commit()
+
+def _apply_scouteo_contributions(conn, message_id: str, target_snapshot_id, points_per_unit: int):
+    rows = conn.execute(
+        """
+        SELECT user_id, minutes, maps, hours_required, maps_per_unit, multiplier_hundredths
+        FROM scouteo_contributions WHERE message_id=?
+        """,
+        (str(message_id),),
+    ).fetchall()
+    scope = _scouteo_scope(target_snapshot_id)
+    calculated = {}
+    for user_id, minutes, maps, hours_required, maps_per_unit, multiplier in rows:
+        balance = conn.execute(
+            "SELECT minutes, maps FROM scouteo_balances WHERE scope=? AND user_id=?",
+            (scope, str(user_id)),
+        ).fetchone() or (0, 0)
+        total_minutes = max(0, int(balance[0] or 0) + int(minutes or 0))
+        total_maps = max(0, int(balance[1] or 0) + int(maps or 0))
+        eligible = total_minutes >= max(1, int(hours_required)) * 60
+        units = total_maps // max(1, int(maps_per_unit)) if eligible else 0
+        remaining_maps = total_maps - units * max(1, int(maps_per_unit))
+        exact_points = (units * max(0, int(points_per_unit)) * int(multiplier) + 50) // 100
+        conn.execute(
+            """
+            INSERT INTO scouteo_balances (scope, user_id, minutes, maps)
+            VALUES (?,?,?,?)
+            ON CONFLICT(scope, user_id) DO UPDATE SET minutes=excluded.minutes, maps=excluded.maps
+            """,
+            (scope, str(user_id), total_minutes, remaining_maps),
+        )
+        conn.execute(
+            "UPDATE evidence_participants SET cantidad=?, points_override=? WHERE message_id=? AND user_id=?",
+            (units, exact_points, str(message_id), str(user_id)),
+        )
+        calculated[str(user_id)] = (units, exact_points)
+    return calculated
+
 def approve_evidence(message_id: str):
     with get_conn() as conn:
         row = conn.execute(
@@ -411,6 +521,10 @@ def approve_evidence(message_id: str):
             return None
         user_id, actividad, _, _, review_message_id, target_snapshot_id = row
         puntos = get_puntos(actividad)
+        scouteo_calculated = (
+            _apply_scouteo_contributions(conn, message_id, target_snapshot_id, puntos)
+            if actividad == "scouteo" else {}
+        )
         participants = conn.execute(
             "SELECT user_id, username, cantidad, points_override FROM evidence_participants WHERE message_id=?",
             (message_id,)
@@ -420,8 +534,14 @@ def approve_evidence(message_id: str):
             participants = [(user_id, scout[0] if scout else user_id, 1, None)]
 
         for participant_id, username, cantidad, points_override in participants:
-            cantidad = max(1, int(cantidad or 1))
+            if str(participant_id) in scouteo_calculated:
+                cantidad, points_override = scouteo_calculated[str(participant_id)]
+                cantidad = max(0, int(cantidad or 0))
+            else:
+                cantidad = max(1, int(cantidad or 1))
             exact_points = int(points_override) if points_override is not None else puntos * cantidad
+            if cantidad == 0:
+                continue
             if target_snapshot_id:
                 _apply_snapshot_activity(
                     conn,
@@ -880,6 +1000,7 @@ def subtract_activity(user_id: str, username: str, actividad: str, cantidad: int
 def reset_all():
     with get_conn() as conn:
         conn.execute("DELETE FROM scouts")
+        conn.execute("DELETE FROM scouteo_balances WHERE scope='current'")
         conn.commit()
 
 def create_ranking_snapshot(period_start=None, period_end=None, reason: str = "manual"):

@@ -65,6 +65,48 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         self.assertEqual(snapshot_scout[5], 6)
         self.assertEqual(snapshot_scout[7], 29)
 
+    def test_hours_and_maps_accumulate_across_approved_daily_summaries(self):
+        self.database.create_evidence_review(
+            "day-1", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]
+        )
+        self.database.set_scouteo_contributions("day-1", [("1", 120, 3, 4, 3, 100)])
+        self.database.approve_evidence("day-1")
+        self.assertEqual(self.database.get_scout("1")[5], 0)
+
+        projection = self.database.get_scouteo_projection("1", 120, 6, 4, 3)
+        self.assertEqual(projection["total_minutes"], 240)
+        self.assertEqual(projection["total_maps"], 9)
+        self.assertEqual(projection["units"], 3)
+
+        self.database.create_evidence_review(
+            "day-2", "1", "Scout", "scouteo", [("1", "Scout", 3, 6)]
+        )
+        self.database.set_scouteo_contributions("day-2", [("1", 120, 6, 4, 3, 100)])
+        self.database.approve_evidence("day-2")
+        self.assertEqual(self.database.get_scout("1")[5], 3)
+        self.assertEqual(self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_maps"], 0)
+
+    def test_rejected_summary_does_not_change_accumulated_balance(self):
+        self.database.create_evidence_review(
+            "rejected", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]
+        )
+        self.database.set_scouteo_contributions("rejected", [("1", 240, 6, 4, 3, 100)])
+        self.database.reject_evidence("rejected")
+        projection = self.database.get_scouteo_projection("1", 0, 0, 4, 3)
+        self.assertEqual(projection["total_minutes"], 0)
+        self.assertEqual(projection["total_maps"], 0)
+
+    def test_weekly_reset_clears_current_scouteo_balance(self):
+        self.database.create_evidence_review(
+            "before-reset", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]
+        )
+        self.database.set_scouteo_contributions("before-reset", [("1", 120, 3, 4, 3, 100)])
+        self.database.approve_evidence("before-reset")
+        self.database.reset_all()
+        projection = self.database.get_scouteo_projection("1", 0, 0, 4, 3)
+        self.assertEqual(projection["total_minutes"], 0)
+        self.assertEqual(projection["total_maps"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,12 +22,18 @@ class ScouteoScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_multiplier_hundredths("x0.65")
 
-    def test_penalty_keeps_base_units_and_applies_to_final_points(self):
+    def test_hours_unlock_map_units_and_penalty_applies_to_final_points(self):
         records = [{"name": "Scout", "hours": 10, "minutes": 0, "maps": 12, "multiplier_hundredths": 95}]
         result = calculate_scouteo_records(records, hours_per_point=5, maps_per_point=3)[0]
-        self.assertEqual(result["base_total"], 6)
-        self.assertEqual(result["total"], 6)
-        self.assertEqual(calculate_scouteo_points(result["total"], 5, 95), 29)
+        self.assertEqual(result["base_total"], 4)
+        self.assertEqual(result["total"], 4)
+        self.assertEqual(calculate_scouteo_points(result["total"], 5, 95), 19)
+
+    def test_maps_do_not_score_before_minimum_hours(self):
+        records = [{"name": "Scout", "hours": 1, "minutes": 0, "maps": 6, "multiplier_hundredths": 100}]
+        result = calculate_scouteo_records(records, hours_per_point=4, maps_per_point=3)[0]
+        self.assertFalse(result["eligible_by_hours"])
+        self.assertEqual(result["total"], 0)
 
     def test_multiplier_never_increases_units(self):
         records = [{"name": "Scout", "hours": 10, "minutes": 0, "maps": 12, "multiplier_hundredths": 100}]

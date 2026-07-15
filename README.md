@@ -59,6 +59,10 @@ Si `/admin conteo` se ejecuta despues del reset pero el resumen diario trae una 
 Para descargar la semana pasada usa `/admin export_ranking fuente:Ultimo cierre semanal formato:Excel (.xlsx)`.
 Para corregir esa semana usa `/admin modificar_puntos fuente:Ultimo cierre semanal` o `/admin puntos fuente:Ultimo cierre semanal`; las restas no bajan una actividad por debajo de 0.
 
+## Conteo acumulado de scouteo
+
+Los resúmenes diarios aprobados acumulan minutos y mapas válidos por scout durante la semana. Se requieren al menos 4 horas acumuladas para habilitar puntos; desde entonces, cada 3 mapas válidos acumulados generan una unidad de scouteo. MapasBot solo reporta un mapa como válido cuando acumula al menos 1 hora de cobertura y conserva entre días los minutos pendientes por mapa. Los mapas sobrantes se conservan y los resúmenes rechazados no modifican el saldo. El saldo actual se limpia junto con el reset semanal del ranking.
+
 ## Niveles
 
 | Nivel | Puntos | Beneficio |

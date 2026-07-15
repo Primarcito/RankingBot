@@ -29,6 +29,7 @@ from database import (
     get_all_scouts,
     get_all_config,
     get_bot_state,
+    get_scouteo_projection,
     get_latest_ranking_snapshot,
     get_puntos,
     get_nivel,
@@ -43,6 +44,7 @@ from database import (
     remove_scout_alias,
     reset_all,
     set_bot_state,
+    set_scouteo_contributions,
     set_evidence_thread,
     set_evidence_review_message,
     set_puntos,
@@ -158,6 +160,7 @@ class SafeModal(discord.ui.Modal):
 async def on_ready():
     global COMMANDS_SYNCED, RESET_TASK_STARTED, TAUNT_TASK_STARTED
     init_db()
+    migrate_scouteo_accumulation_settings()
     bot.add_view(DashboardView())
     bot.add_view(InfoRankingView())
     for message_id in get_pending_evidence_message_ids():
@@ -466,11 +469,20 @@ SPANISH_MONTHS = {
     "noviembre": 11,
     "diciembre": 12,
 }
-SCOUTEO_HOURS_PER_POINT = 5
+SCOUTEO_HOURS_PER_POINT = 4
 SCOUTEO_MAPS_PER_POINT = 3
 SCOUTEO_HOURS_SETTING_KEY = "scouteo_count_hours_per_point"
 SCOUTEO_MAPS_SETTING_KEY = "scouteo_count_maps_per_point"
 SCOUTEO_DASHBOARD_STATE_PREFIX = "scouteo_count_dashboard:"
+SCOUTEO_ACCUMULATION_MIGRATION_KEY = "scouteo_accumulation_v1"
+
+def migrate_scouteo_accumulation_settings():
+    if get_bot_state(SCOUTEO_ACCUMULATION_MIGRATION_KEY):
+        return
+    set_bot_state(SCOUTEO_HOURS_SETTING_KEY, str(SCOUTEO_HOURS_PER_POINT))
+    if not get_bot_state(SCOUTEO_MAPS_SETTING_KEY):
+        set_bot_state(SCOUTEO_MAPS_SETTING_KEY, str(SCOUTEO_MAPS_PER_POINT))
+    set_bot_state(SCOUTEO_ACCUMULATION_MIGRATION_KEY, datetime.now(timezone.utc).isoformat())
 
 def get_scouteo_count_settings():
     return (
@@ -678,7 +690,14 @@ def format_scouteo_participant_line(user_id: str, cantidad: int, record: dict, u
 
     if source_text:
         source_text = source_text.replace("; nombres: ", " · alias: ")
-    return f"<@{user_id}> — {format_scouteo_summary(record, cantidad, unit_points, points)}{source_text}"
+    balance_text = ""
+    if "accumulated_minutes" in record:
+        total_minutes = int(record["accumulated_minutes"])
+        balance_text = (
+            f" · acumulado: {total_minutes // 60}h{total_minutes % 60:02d}m"
+            f" / {int(record.get('accumulated_maps', 0))} mapas"
+        )
+    return f"<@{user_id}> — {format_scouteo_summary(record, cantidad, unit_points, points)}{balance_text}{source_text}"
 
 def extract_scouteo_summary_name(text: str):
     candidates = [
@@ -729,13 +748,6 @@ async def create_scouteo_count_review(
     unresolved_records = []
     suggested_participants = []
     for record in records:
-        if record["total"] <= 0:
-            continue
-        record["calculated_points"] = calculate_scouteo_points(
-            record["total"],
-            unit_points,
-            record.get("multiplier_hundredths", 100),
-        )
         participants, unresolved, suggestions = await participant_tools.resolve_names(
             message.guild,
             [record["name"]],
@@ -747,32 +759,46 @@ async def create_scouteo_count_review(
                 participant_rows_by_user[user_id] = {
                     "user_id": user_id,
                     "display_name": display_name,
-                    "cantidad": 0,
-                    "points": 0,
                     "records": [],
                 }
             participant_rows_by_user[user_id]["display_name"] = display_name
-            participant_rows_by_user[user_id]["cantidad"] += record["total"]
-            participant_rows_by_user[user_id]["points"] += record["calculated_points"]
             participant_rows_by_user[user_id]["records"].append(record)
         else:
-            unresolved_records.extend(dict(record, name=name) for name in unresolved)
+            unresolved_records.extend(dict(record, name=unresolved_name) for unresolved_name in unresolved)
             suggested_participants.extend(suggestions)
 
-    participant_rows = [
-        (
-            item["user_id"],
-            item["display_name"],
-            item["cantidad"],
-            combine_scouteo_records(item["records"]),
-            item["points"],
+    participant_rows = []
+    contributions = []
+    for item in participant_rows_by_user.values():
+        combined = combine_scouteo_records(item["records"])
+        incoming_minutes = sum((int(record["hours"]) * 60) + int(record["minutes"]) for record in item["records"])
+        incoming_maps = sum(int(record["maps"]) for record in item["records"])
+        projection = get_scouteo_projection(
+            item["user_id"], incoming_minutes, incoming_maps,
+            hours_per_point, maps_per_point, target_snapshot_id,
         )
-        for item in participant_rows_by_user.values()
-    ]
+        units = projection["units"]
+        multiplier = min(int(record.get("multiplier_hundredths", 100)) for record in item["records"])
+        points = calculate_scouteo_points(units, unit_points, multiplier)
+        combined.update({
+            "total": units,
+            "base_total": units,
+            "hour_points": 0,
+            "map_points": units,
+            "calculated_points": points,
+            "multiplier_hundredths": multiplier,
+            "accumulated_minutes": projection["total_minutes"],
+            "accumulated_maps": projection["total_maps"],
+        })
+        participant_rows.append((item["user_id"], item["display_name"], units, combined, points))
+        contributions.append((
+            item["user_id"], incoming_minutes, incoming_maps,
+            hours_per_point, maps_per_point, multiplier,
+        ))
     unresolved_names = [record["name"] for record in unresolved_records]
 
     if not participant_rows:
-        print("[SCOUTEO SUMMARY] ignorado: sin participantes con puntos calculados")
+        print("[SCOUTEO SUMMARY] ignorado: sin participantes resueltos")
         return False
 
     owner_id, owner_name, _, _, _ = participant_rows[0]
@@ -787,6 +813,7 @@ async def create_scouteo_count_review(
     if pts <= 0:
         print("[SCOUTEO SUMMARY] duplicado")
         return False
+    set_scouteo_contributions(str(message.id), contributions)
 
     review_channel = await get_review_channel(message)
     embed = discord.Embed(
@@ -794,7 +821,7 @@ async def create_scouteo_count_review(
         color=COLOR_WARNING,
         description=(
             f"**{ACTIVIDADES['scouteo']['label']}** · Resumen del Día → **{target_label}**\n"
-            f"`{hours_per_point}h / {maps_per_point} mapas = 1u` · "
+            f"`mínimo {hours_per_point}h acumuladas · cada {maps_per_point} mapas = 1u` · "
             f"**{sum(row[4] for row in participant_rows)} pts**\n"
             f"{message.channel.mention} · [Abrir evidencia]({message.jump_url})"
         )
@@ -1220,7 +1247,7 @@ def build_scouteo_count_embed(
         description=(
             f"Mensaje: [abrir resumen]({source_message.jump_url})\n"
             f"Destino: **{target_label}**\n"
-            f"Reglas: `{hours_per_point}h = 1 unidad | {maps_per_point} mapas = 1 unidad`\n"
+            f"Reglas: `mínimo {hours_per_point}h acumuladas | cada {maps_per_point} mapas = 1 unidad`\n"
             f"Valor Scouteo: `{unit_points}` pts por unidad\n"
             f"Total: `{total_points}` pts"
         ),
