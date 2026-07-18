@@ -52,43 +52,56 @@ class HierarchyDashboardTests(unittest.TestCase):
                 AccessLevel.OFFICER_ADMIN,
             )
 
-    def test_main_dashboard_buttons_are_compact_by_hierarchy(self):
-        expected = {
-            AccessLevel.GENERAL: ["Perfil", "Ranking", "Prio"],
-            AccessLevel.OFFICER_ADMIN: [
-                "Perfil",
-                "Ranking",
-                "Prio",
-                "Operaciones",
-                "Historial",
-            ],
-            AccessLevel.GM_LEADER: [
-                "Perfil",
-                "Ranking",
-                "Prio",
-                "Operaciones",
-                "Admin",
-                "Historial",
-            ],
-        }
-        for level, labels in expected.items():
-            view = main.RankingHierarchyView(level)
-            self.assertEqual([item.label for item in view.children], labels)
-            self.assertLessEqual(len(view.children), 6)
+    def test_entry_dashboards_are_compact_and_separated_by_purpose(self):
+        ranking = [item.label for item in main.RankingDashboardView().children]
+        counting = [item.label for item in main.CountingDashboardView().children]
+        officer_admin = [
+            item.label
+            for item in main.AdminDashboardView(AccessLevel.OFFICER_ADMIN).children
+        ]
+        gm_leader = [
+            item.label
+            for item in main.AdminDashboardView(AccessLevel.GM_LEADER).children
+        ]
 
-    def test_grouped_dashboards_cover_all_administrative_tools(self):
-        operations = [item.label for item in main.OperationsDashboardView().children]
-        administration = [item.label for item in main.AdministrationDashboardView().children]
+        self.assertEqual(ranking, ["Perfil", "Ranking", "Prio"])
+        self.assertEqual(
+            counting,
+            [
+                "Kill Scout",
+                "Kill Pelea",
+                "Limpieza Aspecto",
+                "Scouteo",
+                "Mapeo",
+                "Pendientes",
+            ],
+        )
+        self.assertEqual(
+            officer_admin,
+            ["Scout", "Ajustes", "Padrón", "Publicar", "Historial"],
+        )
+        self.assertEqual(
+            gm_leader,
+            [
+                "Scout",
+                "Ajustes",
+                "Padrón",
+                "Publicar",
+                "Historial",
+                "Prio",
+                "Valores",
+                "Exportar",
+                "AFK",
+                "Cierre",
+                "Sistema",
+            ],
+        )
+        self.assertLessEqual(len(counting), 6)
+        self.assertLessEqual(len(gm_leader), 11)
+
+    def test_grouped_dashboards_keep_export_tools(self):
         exports = [item.label for item in main.RankingExportView().children]
 
-        self.assertEqual(
-            operations,
-            ["Evidencias", "Scout", "Puntos", "Padrón", "Publicar"],
-        )
-        self.assertEqual(
-            administration,
-            ["Prio", "Valores", "Exportar", "AFK", "Cierre", "Sistema"],
-        )
         self.assertEqual(
             exports,
             ["Actual XLSX", "Actual CSV", "Cierre XLSX", "Cierre CSV"],
@@ -97,7 +110,7 @@ class HierarchyDashboardTests(unittest.TestCase):
     def test_only_summary_commands_are_registered(self):
         self.assertEqual(
             sorted(command.name for command in main.tree.get_commands()),
-            ["ranking"],
+            ["admin", "conteo", "ranking"],
         )
         self.assertEqual(
             sorted(command.name for command in main.admin_group.commands),

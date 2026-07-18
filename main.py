@@ -2424,94 +2424,147 @@ async def mi_ranking(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@tree.command(name="ranking", description="Abre RankingBot con las herramientas de tu jerarquia")
+@tree.command(name="ranking", description="Muestra tu perfil, el ranking y el requisito de prio")
 async def ranking_hub(interaction: discord.Interaction):
-    level = get_access_level(interaction.user)
     await interaction.response.send_message(
-        embed=build_hierarchy_dashboard_embed(interaction.user, level),
-        view=RankingHierarchyView(level),
+        embed=build_ranking_dashboard_embed(interaction.user),
+        view=RankingDashboardView(),
         ephemeral=True,
     )
 
 
-def build_hierarchy_dashboard_embed(member, level: AccessLevel):
+@tree.command(name="conteo", description="Abre el conteo de todas las actividades")
+async def counting_hub(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message(
+            "Requiere jerarquia Officer / Admin.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        embed=build_counting_dashboard_embed(),
+        view=CountingDashboardView(),
+        ephemeral=True,
+    )
+
+
+@tree.command(name="admin", description="Abre la gestion de RankingBot segun tu jerarquia")
+async def administration_hub(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message(
+            "Requiere jerarquia Officer / Admin.",
+            ephemeral=True,
+        )
+        return
+    level = get_access_level(interaction.user)
+    await interaction.response.send_message(
+        embed=build_admin_dashboard_embed(level),
+        view=AdminDashboardView(level),
+        ephemeral=True,
+    )
+
+
+def build_ranking_dashboard_embed(member):
     cutoff = get_priority_min_points()
     ranking = sorted(get_all_scouts(), key=calc_puntos_totales, reverse=True)
-    if level == AccessLevel.GENERAL:
-        scout = get_scout(str(member.id))
-        points = calc_puntos_totales(scout) if scout else 0
-        position = next(
-            (index for index, row in enumerate(ranking, start=1) if str(row[0]) == str(member.id)),
-            None,
-        )
-        status = get_prio_status(points, cutoff)
-        position_text = f"#{position}" if position else "Sin posición"
-        prio_text = "Prio" if status["qualifies"] else f"Faltan {status['missing']} pts"
-        embed = discord.Embed(
-            title=f"{text_emoji('SCOUT')} Mi Ranking",
-            color=COLOR_PERFIL,
-        )
-        top_lines = [
-            f"**#{index} {row[1]}** · {calc_puntos_totales(row)} pts"
-            for index, row in enumerate(ranking[:3], start=1)
-        ]
-        embed.add_field(
-            name=f"{text_emoji('RANKING')} Top 3",
-            value="\n".join(top_lines) if top_lines else "Sin puntos.",
-            inline=False,
-        )
-        embed.add_field(
-            name=f"{text_emoji('POINTS')} Tú",
-            value=f"**{points} pts** · {position_text} · {prio_text}",
-            inline=False,
-        )
-        return embed
-
-    if level == AccessLevel.OFFICER_ADMIN:
-        embed = discord.Embed(
-            title=f"{text_emoji('AUDIT')} Evidencias y Puntos",
-            description=f"**{get_pending_count()} pendientes** · Prio: **{cutoff} pts**",
-            color=COLOR_PANEL,
-        )
-        recent = get_recent_evidence(3)
-        lines = [
-            format_recent_evidence_line(item)
-            for item in recent
-        ]
-        embed.add_field(
-            name=f"{text_emoji('EVIDENCE')} Últimas",
-            value="\n".join(lines) if lines else "Sin evidencias.",
-            inline=False,
-        )
-        return embed
-
-    latest = get_latest_ranking_snapshot()
-    qualifying = sum(1 for row in ranking if calc_puntos_totales(row) >= cutoff)
-    total_points = sum(calc_puntos_totales(row) for row in ranking)
-    next_reset = next_weekly_reset_at()
+    scout = get_scout(str(member.id))
+    points = calc_puntos_totales(scout) if scout else 0
+    position = next(
+        (index for index, row in enumerate(ranking, start=1) if str(row[0]) == str(member.id)),
+        None,
+    )
+    status = get_prio_status(points, cutoff)
+    position_text = f"#{position}" if position else "Sin posición"
+    prio_text = "Prio" if status["qualifies"] else f"Faltan {status['missing']} pts"
     embed = discord.Embed(
-        title=f"{text_emoji('PRIO')} Prio y Cierre",
-        description=f"**{qualifying}** califican · Corte: **{cutoff} pts**",
-        color=COLOR_RANKING,
+        title=f"{text_emoji('SCOUT')} Mi Ranking",
+        color=COLOR_PERFIL,
+    )
+    top_lines = [
+        f"**#{index} {row[1]}** · {calc_puntos_totales(row)} pts"
+        for index, row in enumerate(ranking[:3], start=1)
+    ]
+    embed.add_field(
+        name=f"{text_emoji('RANKING')} Top 3",
+        value="\n".join(top_lines) if top_lines else "Sin puntos.",
+        inline=False,
     )
     embed.add_field(
-        name=f"{text_emoji('RANKING')} Actual",
-        value=f"**{len(ranking)} scouts** · {total_points} pts",
+        name=f"{text_emoji('POINTS')} Tú",
+        value=f"**{points} pts** · {position_text} · {prio_text}",
+        inline=False,
+    )
+    return embed
+
+
+def build_counting_dashboard_embed():
+    points_config = {activity: points for activity, points in get_all_config()}
+    activity_lines = [
+        f"{meta['emoji']} **{meta['label']}** · {points_config.get(key, 0)} pts/u"
+        for key, meta in ACTIVIDADES.items()
+    ]
+    recent_lines = [format_recent_evidence_line(item) for item in get_recent_evidence(3)]
+    review_channel = (
+        f"<#{EVIDENCE_REVIEW_CHANNEL_ID}>"
+        if EVIDENCE_REVIEW_CHANNEL_ID
+        else "canal sin configurar"
+    )
+    embed = discord.Embed(
+        title=f"{text_emoji('POINTS')} Conteo",
+        description=f"**{get_pending_count()} pendientes** · {review_channel}",
+        color=COLOR_PANEL,
+    )
+    embed.add_field(
+        name="Actividades",
+        value="\n".join(activity_lines),
         inline=True,
     )
     embed.add_field(
-        name=f"{text_emoji('CALENDAR')} Cierre",
+        name=f"{text_emoji('EVIDENCE')} Últimas",
+        value="\n".join(recent_lines) if recent_lines else "Sin evidencias.",
+        inline=True,
+    )
+    return embed
+
+
+def build_admin_dashboard_embed(level: AccessLevel):
+    cutoff = get_priority_min_points()
+    ranking = get_all_scouts()
+    events = get_audit_events(limit=1)
+    latest_event = events[0] if events else None
+    embed = discord.Embed(
+        title=f"{text_emoji('SETTINGS')} Admin",
+        description=f"**{len(ranking)} scouts** · **{get_pending_count()} pendientes**",
+        color=COLOR_RANKING if level >= AccessLevel.GM_LEADER else COLOR_PANEL,
+    )
+    embed.add_field(
+        name=f"{text_emoji('PRIO')} Prio",
+        value=f"**{cutoff} pts**",
+        inline=True,
+    )
+    if level >= AccessLevel.GM_LEADER:
+        latest = get_latest_ranking_snapshot()
+        next_reset = next_weekly_reset_at()
+        embed.add_field(
+            name=f"{text_emoji('CALENDAR')} Cierre",
+            value=f"**#{latest[0]}** · {short_dashboard_date(latest[3])}" if latest else "Sin cierre.",
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{text_emoji('PENDING')} Próximo",
+            value=f"<t:{int(next_reset.timestamp())}:R>",
+            inline=True,
+        )
+
+    embed.add_field(
+        name=f"{text_emoji('AUDIT')} Último cambio",
         value=(
-            f"**#{latest[0]}** · {latest[5]} scouts · {short_dashboard_date(latest[3])}"
-            if latest else
-            "Sin cierre."
+            f"{audit_action_label(latest_event.get('action'))} · "
+            f"{str(latest_event.get('summary') or 'Sin detalle')[:180]}"
+            if latest_event else
+            "Sin movimientos."
         ),
-        inline=True,
-    )
-    embed.add_field(
-        name=f"{text_emoji('PENDING')} Próximo",
-        value=f"<t:{int(next_reset.timestamp())}:R>",
-        inline=True,
+        inline=False,
     )
     return embed
 
@@ -2536,72 +2589,19 @@ def short_dashboard_date(value):
     return text or "-"
 
 
-class RankingHierarchyView(SafeView):
-    def __init__(self, level: AccessLevel):
+class RankingDashboardView(SafeView):
+    def __init__(self):
         super().__init__(timeout=900)
-        self.level = AccessLevel(level)
         self.add_item(HubProfileButton())
         self.add_item(HubRankingButton())
         self.add_item(HubRequirementButton())
-        if self.level >= AccessLevel.OFFICER_ADMIN:
-            self.add_item(HubOperationsButton())
-        if self.level >= AccessLevel.GM_LEADER:
-            self.add_item(HubAdministrationButton())
-        if self.level >= AccessLevel.OFFICER_ADMIN:
-            self.add_item(HubAuditButton())
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        current = get_access_level(interaction.user)
-        if current >= self.level:
-            return True
-        await interaction.response.send_message("Tu jerarquia ya no permite usar este panel.", ephemeral=True)
-        return False
-
-
-class HubOperationsButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(
-            label="Operaciones",
-            emoji=button_emoji("EVIDENCE"),
-            style=discord.ButtonStyle.primary,
-            row=1,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
-            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            embed=build_operations_embed(),
-            view=OperationsDashboardView(),
-            ephemeral=True,
-        )
-
-
-def build_operations_embed():
-    recent = get_recent_evidence(3)
-    lines = [format_recent_evidence_line(item) for item in recent]
-    embed = discord.Embed(
-        title=f"{text_emoji('EVIDENCE')} Operaciones",
-        description=f"**{get_pending_count()} pendientes**",
-        color=COLOR_PANEL,
-    )
-    embed.add_field(
-        name="Últimas",
-        value="\n".join(lines) if lines else "Sin evidencias.",
-        inline=False,
-    )
-    return embed
-
-
-class OperationsDashboardView(SafeView):
+class CountingDashboardView(SafeView):
     def __init__(self):
         super().__init__(timeout=600)
-        self.add_item(HubEvidenceButton())
-        self.add_item(HubScoutProfileButton())
-        self.add_item(HubBulkPointsButton())
-        self.add_item(HubRosterButton())
-        self.add_item(HubPublishInfoButton())
+        for activity_key in ACTIVIDADES:
+            self.add_item(CountingActivityButton(activity_key))
+        self.add_item(CountingPendingButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if is_admin(interaction):
@@ -2610,67 +2610,80 @@ class OperationsDashboardView(SafeView):
         return False
 
 
-class HubAdministrationButton(discord.ui.Button):
+class CountingActivityButton(discord.ui.Button):
+    def __init__(self, activity_key: str):
+        meta = ACTIVIDADES[activity_key]
+        super().__init__(
+            label=meta["label"],
+            emoji=meta["emoji"],
+            style=discord.ButtonStyle.primary if activity_key == "scouteo" else discord.ButtonStyle.secondary,
+            row=0,
+        )
+        self.activity_key = activity_key
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        if self.activity_key == "scouteo":
+            await interaction.response.send_modal(ScouteoCountLaunchModal())
+            return
+        if self.activity_key == "mapeo":
+            await analizar_mapeo.callback(interaction, fuente="actual")
+            return
+        await interaction.response.send_modal(BulkPointsModal(self.activity_key, "actual"))
+
+
+class CountingPendingButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Admin",
-            emoji=button_emoji("SETTINGS"),
+            label="Pendientes",
+            emoji=button_emoji("PENDING"),
             style=discord.ButtonStyle.secondary,
             row=1,
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if not is_gm_member(interaction.user):
-            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            embed=build_administration_embed(),
-            view=AdministrationDashboardView(),
-            ephemeral=True,
+        recent = [format_recent_evidence_line(item) for item in get_recent_evidence(5)]
+        channel_text = (
+            f"<#{EVIDENCE_REVIEW_CHANNEL_ID}>"
+            if EVIDENCE_REVIEW_CHANNEL_ID
+            else "Canal sin configurar"
         )
+        embed = discord.Embed(
+            title=f"{text_emoji('PENDING')} Pendientes",
+            description=f"**{get_pending_count()} evidencias** · {channel_text}",
+            color=COLOR_WARNING,
+        )
+        embed.add_field(
+            name="Últimas",
+            value="\n".join(recent) if recent else "Sin evidencias.",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-def build_administration_embed():
-    cutoff = get_priority_min_points()
-    latest = get_latest_ranking_snapshot()
-    next_reset = next_weekly_reset_at()
-    embed = discord.Embed(
-        title=f"{text_emoji('SETTINGS')} Admin",
-        description="Prio · cierres · sistema.",
-        color=COLOR_RANKING,
-    )
-    embed.add_field(
-        name=f"{text_emoji('PRIO')} Corte",
-        value=f"**{cutoff} pts**",
-        inline=True,
-    )
-    embed.add_field(
-        name=f"{text_emoji('CALENDAR')} Cierre",
-        value=f"**#{latest[0]}** · {short_dashboard_date(latest[3])}" if latest else "Sin cierre.",
-        inline=True,
-    )
-    embed.add_field(
-        name=f"{text_emoji('PENDING')} Próximo",
-        value=f"<t:{int(next_reset.timestamp())}:R>",
-        inline=True,
-    )
-    return embed
-
-
-class AdministrationDashboardView(SafeView):
-    def __init__(self):
+class AdminDashboardView(SafeView):
+    def __init__(self, level: AccessLevel):
         super().__init__(timeout=600)
-        self.add_item(HubPriorityButton())
-        self.add_item(HubSettingsButton())
-        self.add_item(HubExportButton())
-        self.add_item(HubAfkButton())
-        self.add_item(HubClosureButton())
-        self.add_item(HubSystemButton())
+        self.level = AccessLevel(level)
+        self.add_item(HubScoutProfileButton())
+        self.add_item(HubBulkPointsButton())
+        self.add_item(HubRosterButton())
+        self.add_item(HubPublishInfoButton())
+        self.add_item(HubAuditButton())
+        if self.level >= AccessLevel.GM_LEADER:
+            self.add_item(HubPriorityButton())
+            self.add_item(HubSettingsButton())
+            self.add_item(HubExportButton())
+            self.add_item(HubAfkButton())
+            self.add_item(HubClosureButton())
+            self.add_item(HubSystemButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if is_gm_member(interaction.user):
+        if is_admin(interaction):
             return True
-        await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+        await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
         return False
 
 
@@ -2870,7 +2883,7 @@ class ScoutProfilePicker(discord.ui.UserSelect):
 class HubBulkPointsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Puntos",
+            label="Ajustes",
             emoji=button_emoji("POINTS"),
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -6343,9 +6356,9 @@ def current_weekly_ranking_start():
     return target
 
 
-# Los flujos de admin conservan sus callbacks y validaciones, pero no se
-# registran como slash commands separados. /ranking los expone por jerarquia
-# mediante dashboards, igual que MapasBot.
+# Los flujos internos conservan sus callbacks y validaciones sin registrarse
+# como slash commands pequeños. /ranking, /conteo y /admin los agrupan por
+# propósito y jerarquía.
 
 
 if __name__ == "__main__":

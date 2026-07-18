@@ -39,7 +39,7 @@ respaldo.
 ## Previews
 
 - `ranking-emojis-preview.png`: catalogo completo de emojis.
-- `ranking-dashboards-preview.png`: dashboards General, Officer/Admin y GM/Lider.
+- `ranking-dashboards-preview.png`: entradas separadas `/ranking`, `/conteo` y `/admin`.
 - `ranking-review-preview.png`: revision de evidencia y multiplicador individual.
 - `ranking-audit-preview.png`: historial de cambios y descarga completa en Markdown.
 - `ranking-buttons-preview.png`: actividades y acciones sin emojis ambiguos.

@@ -32,48 +32,44 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 
 ## Comandos
 
-`/ranking` es la entrada principal. Detecta la jerarquia del usuario y abre uno
-de tres dashboards con botones, selectores y formularios. Discord solo
-registra `/ranking`; las funciones generales y administrativas permanecen
-detrás de los botones y conservan sus permisos.
+Discord registra tres entradas compactas. Cada una agrupa funciones relacionadas
+en botones y conserva las validaciones de jerarquía de cada operación.
 
-Los accesos se agrupan para mantener el panel compacto: **Operaciones** reúne
-evidencias, scout, puntos, padrón y publicaciones; **Admin** reúne prio,
-valores, exportaciones, AFK, cierres y sistema. Officer/Admin y GM/Lider
-también ven **Historial**, con los últimos 6 movimientos y la auditoría
-completa en Markdown (`.md`).
-
-| Jerarquia | Dashboard |
-|---|---|
-| General | **Mi Ranking**: top 3, puntos, posición y estado de prio |
-| Officer / Admin | **Evidencias y Puntos**: pendientes y últimas 3 evidencias |
-| GM / Lider | **Prio y Cierre**: clasificados, ranking actual, último cierre y próximo reset |
-
-| Ruta en `/ranking` | Función | Jerarquia |
+| Comando | Contenido | Jerarquia |
 |---|---|---|
-| **Perfil** | Tu perfil y puntos | General |
-| **Operaciones > Scout** | Perfil y ajustes individuales | Officer / Admin |
-| **Operaciones > Evidencias > Scouteo** | Conteo auditado de resumen diario | Officer / Admin |
-| **Operaciones > Evidencias > Mapeo** | Análisis semanal de logs | Officer / Admin |
-| **Operaciones > Puntos** | Ajustes grupales auditados | Officer / Admin |
-| **Operaciones > Padrón** | Aliases y alts | Officer / Admin |
-| **Operaciones > Publicar** | Guía y ranking público | Officer / Admin |
-| **Admin > Prio** | Corte, CSV y sincronización de rol | GM / Lider |
-| **Admin > AFK** | Auditoría de inactividad y kicks | GM / Lider |
-| **Admin > Exportar** | Ranking actual o cierre en XLSX/CSV | GM / Lider |
-| **Admin > Cierre** | Guarda el cierre y limpia el ranking | GM / Lider |
-| **Admin > Sistema > Mover conteo** | Corrige el cierre de un conteo | GM / Lider |
-| **Admin > Sistema > Checkpoint** | Reinicia el análisis de mapeo | GM / Lider |
-| **Admin > Sistema > Paneles** | Actualiza los paneles públicos | GM / Lider |
+| `/ranking` | Mi perfil, top general y requisito de prio | General |
+| `/conteo` | Las 5 actividades, evidencias pendientes y revisiones | Officer / Admin |
+| `/admin` | Scouts, ajustes, padrón, publicaciones e historial | Officer / Admin |
+| `/admin` | Prio, valores, exportaciones, AFK, cierre y sistema | GM / Lider |
+
+| Ruta | Función |
+|---|---|
+| `/ranking` > **Perfil** | Tu perfil y puntos |
+| `/conteo` > **Kill Scout / Kill Pelea / Limpieza** | Conteo manual auditado para el ranking actual |
+| `/conteo` > **Scouteo** | Conteo del resumen diario enviado a revisión |
+| `/conteo` > **Mapeo** | Análisis semanal de logs antes de confirmar |
+| `/conteo` > **Pendientes** | Total, canal y evidencias recientes |
+| `/admin` > **Scout** | Perfil y correcciones individuales |
+| `/admin` > **Ajustes** | Ajustes grupales del ranking actual o último cierre |
+| `/admin` > **Padrón** | Aliases y alts |
+| `/admin` > **Publicar** | Guía y ranking público |
+| `/admin` > **Historial** | Últimos movimientos y auditoría completa en Markdown |
+| `/admin` > **Prio** | Corte, CSV y sincronización de rol |
+| `/admin` > **AFK** | Auditoría de inactividad y kicks |
+| `/admin` > **Exportar** | Ranking actual o cierre en XLSX/CSV |
+| `/admin` > **Cierre** | Guarda el cierre y limpia el ranking |
+| `/admin` > **Sistema > Mover conteo** | Corrige el cierre de un conteo |
+| `/admin` > **Sistema > Checkpoint** | Reinicia el análisis de mapeo |
+| `/admin` > **Sistema > Paneles** | Actualiza los paneles públicos |
 
 ## Cierres semanales
 
-Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar **Admin > Prio** con la fuente del último cierre para dar o quitar el rol aunque el ranking nuevo ya esté limpio.
+Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar `/admin` > **Prio** con la fuente del último cierre para dar o quitar el rol aunque el ranking nuevo ya esté limpio.
 
-Si **Operaciones > Evidencias > Scouteo** se usa después del reset pero el resumen diario trae una fecha de la semana cerrada, la revisión queda apuntando a ese cierre semanal. Al aprobarla suma esos puntos al cierre archivado, no al ranking nuevo.
+Si `/conteo` > **Scouteo** se usa después del reset pero el resumen diario trae una fecha de la semana cerrada, la revisión queda apuntando a ese cierre semanal. Al aprobarla suma esos puntos al cierre archivado, no al ranking nuevo.
 
-Para descargar la semana pasada usa **Admin > Exportar > Cierre XLSX/CSV**.
-Para corregir esa semana usa **Operaciones > Scout** o **Operaciones > Puntos** con la fuente del último cierre; las restas no bajan una actividad por debajo de 0.
+Para descargar la semana pasada usa `/admin` > **Exportar > Cierre XLSX/CSV**.
+Para corregir esa semana usa `/admin` > **Scout** o **Ajustes** con la fuente del último cierre; las restas no bajan una actividad por debajo de 0.
 
 ## Conteo acumulado de scouteo
 
@@ -109,7 +105,7 @@ AFKs, publicaciones, exportaciones, configuracion y cierres. Cada evento
 conserva fecha UTC, responsable, objetivo, resumen y detalles antes/despues
 cuando corresponde.
 
-La descarga se genera desde `/ranking` > **Historial** > **Exportar MD** y
+La descarga se genera desde `/admin` > **Historial** > **Exportar MD** y
 contiene todos los eventos, del mas reciente al mas antiguo. Consultar o
 actualizar visualmente un panel no genera ruido; las exportaciones y acciones
 que cambian datos si quedan registradas.

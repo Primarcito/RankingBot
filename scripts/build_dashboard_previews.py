@@ -113,12 +113,12 @@ def draw_dashboard_card(canvas, x, title, subtitle, accent, emblem, fields, butt
 
 
 def build_dashboards():
-    canvas = Image.new("RGBA", (1580, 700), (30, 31, 34, 255))
+    canvas = Image.new("RGBA", (1580, 900), (30, 31, 34, 255))
     draw = ImageDraw.Draw(canvas)
-    draw.text((48, 34), "RankingBot · dashboards por jerarquia", font=font(36, True), fill=(245, 246, 247))
+    draw.text((48, 34), "RankingBot · dashboards por función", font=font(36, True), fill=(245, 246, 247))
     draw.text(
         (49, 82),
-        "Una sola entrada /ranking; el contenido cambia segun el acceso detectado.",
+        "Tres entradas claras: /ranking, /conteo y /admin.",
         font=font(20),
         fill=(166, 168, 173),
     )
@@ -143,11 +143,15 @@ def build_dashboards():
     draw_dashboard_card(
         canvas,
         560,
-        "Evidencias y Puntos",
-        "7 pendientes · Prio: 50 pts",
+        "Conteo",
+        "7 pendientes · #revision-ranking",
         (49, 90, 138),
-        "ranking_auditoria",
+        "ranking_puntos",
         [
+            (
+                "ACTIVIDADES",
+                "Kill Scout · 2 pts/u\nKill Pelea · 3 pts/u\nLimpieza · 1 pt/u\nScouteo · 2 pts/u\nMapeo · 1 pt/u",
+            ),
             (
                 "ÚLTIMAS",
                 "Aprob. · Scouteo · 76 pts · 3p\n"
@@ -156,32 +160,39 @@ def build_dashboards():
             ),
         ],
         [
-            ("Perfil", "ranking_scout", "secondary"),
-            ("Ranking", "ranking_trofeo", "primary"),
-            ("Prio", "ranking_prio", "secondary"),
-            ("Operaciones", "ranking_evidencia", "primary"),
-            ("Historial", "ranking_auditoria", "secondary"),
+            ("Kill Scout", "ranking_kill_scout", "secondary"),
+            ("Kill Pelea", "ranking_kill_pelea", "secondary"),
+            ("Limpieza", "ranking_limpieza", "secondary"),
+            ("Scouteo", "ranking_scouteo", "primary"),
+            ("Mapeo", "ranking_mapeo", "secondary"),
+            ("Pendientes", "ranking_pendiente", "secondary"),
         ],
     )
     draw_dashboard_card(
         canvas,
         1080,
-        "Prio y Cierre",
-        "8 califican · Corte: 50 pts",
+        "Admin",
+        "32 scouts · 7 pendientes",
         (224, 168, 46),
-        "ranking_prio",
+        "ranking_config",
         [
-            ("ACTUAL", "32 scouts · 1,486 pts"),
+            ("PRIO", "50 pts"),
             ("CIERRE", "#18 · 31 scouts · 17/07 10:00"),
             ("PRÓXIMO", "En 5 días"),
+            ("ÚLTIMO CAMBIO", "Multiplicador actualizado · ChinoJVS x1.00 → x0.85"),
         ],
         [
-            ("Perfil", "ranking_scout", "secondary"),
-            ("Ranking", "ranking_trofeo", "primary"),
-            ("Prio", "ranking_prio", "secondary"),
-            ("Operaciones", "ranking_evidencia", "primary"),
-            ("Admin", "ranking_config", "secondary"),
+            ("Scout", "ranking_scout", "secondary"),
+            ("Ajustes", "ranking_puntos", "secondary"),
+            ("Padrón", "ranking_personas", "secondary"),
+            ("Publicar", "ranking_publicar", "secondary"),
             ("Historial", "ranking_auditoria", "secondary"),
+            ("Prio", "ranking_prio", "secondary"),
+            ("Valores", "ranking_puntos", "secondary"),
+            ("Exportar", "ranking_exportar", "secondary"),
+            ("AFK", "ranking_afk", "secondary"),
+            ("Cierre", "ranking_cierre", "danger"),
+            ("Sistema", "ranking_config", "secondary"),
         ],
     )
     canvas.convert("RGB").save(OUTPUT_DIR / "ranking-dashboards-preview.png", quality=95)
