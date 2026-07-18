@@ -470,6 +470,22 @@ def get_pending_alert_role(guild: discord.Guild):
     return sorted(gm_roles, key=lambda role: role.position, reverse=True)[0] if gm_roles else None
 
 
+def build_pending_evidence_alert_content(
+    role_mention: str,
+    activity_label: str,
+    created_at: str,
+    review_url: str,
+):
+    created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    timestamp = int(created.timestamp())
+    return (
+        f"{role_mention} **{activity_label}** pendiente "
+        f"desde <t:{timestamp}:R>. [Abrir revisión]({review_url})"
+    )
+
+
 async def alert_overdue_pending_evidence():
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -496,9 +512,15 @@ async def alert_overdue_pending_evidence():
             item["activity"],
             {"label": item["activity"] or "Evidencia"},
         )["label"]
-        content = (
-            f"{role.mention} esta revisión de **{activity_label}** "
-            "lleva más de **5 horas** pendiente. Por favor, revísenla."
+        review_url = (
+            f"https://discord.com/channels/{guild.id}/{channel.id}/"
+            f"{item['review_message_id']}"
+        )
+        content = build_pending_evidence_alert_content(
+            role.mention,
+            activity_label,
+            item["created_at"],
+            review_url,
         )
         try:
             try:
@@ -516,7 +538,7 @@ async def alert_overdue_pending_evidence():
                 )
             except discord.NotFound:
                 await channel.send(
-                    f"{content}\nID de evidencia: `{item['message_id']}`",
+                    content,
                     allowed_mentions=discord.AllowedMentions(
                         roles=True,
                         users=False,

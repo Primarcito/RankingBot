@@ -124,6 +124,21 @@ class HierarchyDashboardTests(unittest.TestCase):
         self.assertIn("RankingPaginationView", source)
         self.assertIn("per_page=15", source)
 
+    def test_pending_alert_uses_relative_time_and_clickable_review(self):
+        content = main.build_pending_evidence_alert_content(
+            "<@&20>",
+            "Kill Pelea",
+            "2026-07-18T10:00:00",
+            "https://discord.com/channels/1/2/3",
+        )
+        self.assertIn("<t:1784368800:R>", content)
+        self.assertIn(
+            "[Abrir revisión](https://discord.com/channels/1/2/3)",
+            content,
+        )
+        self.assertNotIn("5 horas", content)
+        self.assertNotIn("ID de evidencia", content)
+
     def test_only_summary_commands_are_registered(self):
         self.assertEqual(
             sorted(command.name for command in main.tree.get_commands()),
