@@ -1,0 +1,78 @@
+import gc
+import importlib
+import os
+import tempfile
+import unittest
+import warnings
+from datetime import datetime, timezone
+
+from audit_log import build_audit_markdown
+
+
+class AuditLogTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        os.environ["DATA_DIR"] = self.temp_dir.name
+        import database
+
+        self.database = importlib.reload(database)
+        self.database.init_db()
+
+    def tearDown(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            gc.collect()
+        self.temp_dir.cleanup()
+
+    def test_events_are_persistent_and_returned_newest_first(self):
+        first_id = self.database.record_audit_event(
+            "multiplicadores",
+            "actualizar",
+            "10",
+            "Officer",
+            "evidencia",
+            "100",
+            "Cambio x1.00 a x0.95",
+            {"antes": "1.00", "despues": "0.95"},
+            "2026-07-18T10:00:00",
+        )
+        second_id = self.database.record_audit_event(
+            "evidencias",
+            "aprobar",
+            "11",
+            "Admin",
+            "evidencia",
+            "100",
+            "Evidencia aprobada",
+            created_at="2026-07-18T10:05:00",
+        )
+        events = self.database.get_audit_events()
+        self.assertEqual([event["id"] for event in events], [second_id, first_id])
+        self.assertEqual(events[1]["details"]["despues"], "0.95")
+
+    def test_markdown_contains_actor_target_and_details(self):
+        events = [{
+            "id": 7,
+            "created_at": "2026-07-18T10:00:00",
+            "category": "multiplicadores",
+            "action": "actualizar",
+            "actor_id": "10",
+            "actor_name": "Officer",
+            "target_type": "evidencia",
+            "target_id": "100",
+            "summary": "Cambio x1.00 a x0.95",
+            "details": {"antes": "1.00", "despues": "0.95"},
+        }]
+        content = build_audit_markdown(
+            events,
+            datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertIn("# Historial de RankingBot", content)
+        self.assertIn("Ajustes de multiplicador", content)
+        self.assertIn("Officer (`10`)", content)
+        self.assertIn("evidencia `100`", content)
+        self.assertIn("**Despues:** `0.95`", content)
+
+
+if __name__ == "__main__":
+    unittest.main()

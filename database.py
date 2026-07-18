@@ -1,7 +1,8 @@
 import os
 import sqlite3
 import unicodedata
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 
 DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -15,13 +16,13 @@ DEFAULT_ACTIVITY_POINTS = {
 }
 ACTIVITY_COLUMNS = tuple(DEFAULT_ACTIVITY_POINTS.keys())
 CONFIG_REPAIR_MARKER = "__repair_points_config_2026_05_25"
-PRIORITY_LEVELS = (
-    {"level": "S", "min": 120, "max": None, "benefit": "Maxima prioridad"},
-    {"level": "A", "min": 80, "max": 119, "benefit": "Alta prioridad"},
-    {"level": "B", "min": 50, "max": 79, "benefit": "Prioridad media"},
-    {"level": "C", "min": 20, "max": 49, "benefit": "Prioridad basica"},
-    {"level": "Inactivo", "min": 0, "max": 19, "benefit": "Sin prioridad"},
-)
+DEFAULT_PRIORITY_MIN_POINTS = 50
+PRIORITY_MIN_STATE_KEY = "priority_min_points"
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
 
 def get_conn():
     return sqlite3.connect(DB_PATH)
@@ -104,6 +105,24 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                category TEXT NOT NULL,
+                action TEXT NOT NULL,
+                actor_id TEXT,
+                actor_name TEXT,
+                target_type TEXT,
+                target_id TEXT,
+                summary TEXT,
+                details_json TEXT
+            )
+        """)
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
+            ON audit_events(created_at DESC)
         """)
         c.execute("""
             CREATE TABLE IF NOT EXISTS scouteo_balances (
@@ -236,7 +255,7 @@ def add_activity(user_id: str, username: str, actividad: str, cantidad: int):
         )
         conn.execute(
             "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-            (user_id, username, actividad, cantidad, total_puntos, datetime.utcnow().isoformat(), "suma")
+            (user_id, username, actividad, cantidad, total_puntos, utc_now_iso(), "suma")
         )
         conn.commit()
     return total_puntos
@@ -254,7 +273,7 @@ def create_evidence_review(
         ensure_scout(user_id, username)
     participants = participants or [(user_id, username)]
     puntos_unit = get_puntos(actividad)
-    fecha = datetime.utcnow().isoformat()
+    fecha = utc_now_iso()
     with get_conn() as conn:
         try:
             conn.execute(
@@ -418,6 +437,137 @@ def get_today_evidence_count() -> int:
         ).fetchone()
     return row[0] if row else 0
 
+
+def get_recent_evidence(limit: int = 3):
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                e.message_id,
+                e.actividad,
+                e.status,
+                e.fecha,
+                e.target_snapshot_id,
+                COUNT(ep.user_id) AS participant_count,
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN ep.user_id IS NULL THEN e.puntos
+                            ELSE COALESCE(
+                                ep.points_override,
+                                e.puntos * CASE WHEN ep.cantidad > 0 THEN ep.cantidad ELSE 0 END
+                            )
+                        END
+                    ),
+                    e.puntos
+                ) AS total_points
+            FROM evidence_messages e
+            LEFT JOIN evidence_participants ep ON ep.message_id = e.message_id
+            GROUP BY e.message_id
+            ORDER BY e.fecha DESC, e.rowid DESC
+            LIMIT ?
+            """,
+            (max(1, min(10, int(limit))),),
+        ).fetchall()
+    return [
+        {
+            "message_id": str(row[0]),
+            "activity": row[1],
+            "status": row[2],
+            "created_at": row[3],
+            "target_snapshot_id": row[4],
+            "participants": max(1, int(row[5] or 0)),
+            "points": int(row[6] or 0),
+        }
+        for row in rows
+    ]
+
+
+def record_audit_event(
+    category: str,
+    action: str,
+    actor_id: str | None = None,
+    actor_name: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    summary: str | None = None,
+    details: dict | None = None,
+    created_at: str | None = None,
+):
+    timestamp = created_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    payload = json.dumps(details or {}, ensure_ascii=False, sort_keys=True)
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO audit_events (
+                created_at, category, action, actor_id, actor_name,
+                target_type, target_id, summary, details_json
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                timestamp,
+                str(category or "sistema"),
+                str(action or "evento"),
+                str(actor_id) if actor_id is not None else None,
+                str(actor_name) if actor_name is not None else None,
+                str(target_type) if target_type is not None else None,
+                str(target_id) if target_id is not None else None,
+                str(summary or ""),
+                payload,
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+def get_audit_events(limit: int | None = 500, category: str | None = None):
+    query = """
+        SELECT id, created_at, category, action, actor_id, actor_name,
+               target_type, target_id, summary, details_json
+        FROM audit_events
+    """
+    params = []
+    if category:
+        query += " WHERE category=?"
+        params.append(str(category))
+    query += " ORDER BY id DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(max(1, int(limit)))
+
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    events = []
+    for row in rows:
+        try:
+            details = json.loads(row[9] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            details = {"raw": row[9]}
+        events.append({
+            "id": int(row[0]),
+            "created_at": row[1],
+            "category": row[2],
+            "action": row[3],
+            "actor_id": row[4],
+            "actor_name": row[5],
+            "target_type": row[6],
+            "target_id": row[7],
+            "summary": row[8] or "",
+            "details": details,
+        })
+    return events
+
+def get_evidence_summary(message_id: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT message_id, user_id, actividad, puntos, status, review_message_id, target_snapshot_id
+            FROM evidence_messages
+            WHERE message_id=?
+            """,
+            (str(message_id),),
+        ).fetchone()
+
 def _scouteo_scope(target_snapshot_id=None) -> str:
     return f"snapshot:{int(target_snapshot_id)}" if target_snapshot_id else "current"
 
@@ -470,6 +620,86 @@ def set_scouteo_contributions(message_id: str, contributions):
             ],
         )
         conn.commit()
+
+def get_scouteo_review_rows(message_id: str):
+    with get_conn() as conn:
+        evidence = conn.execute(
+            "SELECT target_snapshot_id, status FROM evidence_messages WHERE message_id=? AND actividad='scouteo'",
+            (str(message_id),),
+        ).fetchone()
+        if not evidence:
+            return []
+        target_snapshot_id, status = evidence
+        rows = conn.execute(
+            """
+            SELECT c.user_id, COALESCE(p.username, c.user_id), c.minutes, c.maps,
+                   c.hours_required, c.maps_per_unit, c.multiplier_hundredths
+            FROM scouteo_contributions c
+            LEFT JOIN evidence_participants p
+              ON p.message_id=c.message_id AND p.user_id=c.user_id
+            WHERE c.message_id=?
+            ORDER BY LOWER(COALESCE(p.username, c.user_id))
+            """,
+            (str(message_id),),
+        ).fetchall()
+
+    points_per_unit = get_puntos("scouteo")
+    result = []
+    for user_id, username, minutes, maps, hours_required, maps_per_unit, multiplier in rows:
+        projection = get_scouteo_projection(
+            str(user_id),
+            int(minutes or 0),
+            int(maps or 0),
+            int(hours_required or 1),
+            int(maps_per_unit or 1),
+            target_snapshot_id,
+        )
+        units = projection["units"]
+        exact_points = (units * max(0, int(points_per_unit)) * int(multiplier) + 50) // 100
+        result.append({
+            "user_id": str(user_id),
+            "username": username,
+            "minutes": int(minutes or 0),
+            "maps": int(maps or 0),
+            "hours_required": int(hours_required or 1),
+            "maps_per_unit": int(maps_per_unit or 1),
+            "multiplier_hundredths": int(multiplier or 100),
+            "units": units,
+            "points": exact_points,
+            "accumulated_minutes": projection["total_minutes"],
+            "accumulated_maps": projection["total_maps"],
+            "status": status,
+        })
+    return result
+
+def set_scouteo_review_multiplier(message_id: str, user_id: str, multiplier_hundredths: int):
+    multiplier = max(70, min(100, int(multiplier_hundredths)))
+    with get_conn() as conn:
+        evidence = conn.execute(
+            "SELECT status FROM evidence_messages WHERE message_id=? AND actividad='scouteo'",
+            (str(message_id),),
+        ).fetchone()
+        if not evidence:
+            return {"ok": False, "reason": "not_found"}
+        if evidence[0] != "pending":
+            return {"ok": False, "reason": "already_reviewed"}
+        cursor = conn.execute(
+            """
+            UPDATE scouteo_contributions
+            SET multiplier_hundredths=?
+            WHERE message_id=? AND user_id=?
+            """,
+            (multiplier, str(message_id), str(user_id)),
+        )
+        if cursor.rowcount <= 0:
+            return {"ok": False, "reason": "participant_not_found"}
+        conn.commit()
+
+    row = next(
+        (item for item in get_scouteo_review_rows(message_id) if item["user_id"] == str(user_id)),
+        None,
+    )
+    return {"ok": True, "row": row}
 
 def _apply_scouteo_contributions(conn, message_id: str, target_snapshot_id, points_per_unit: int):
     rows = conn.execute(
@@ -566,7 +796,7 @@ def approve_evidence(message_id: str):
                 )
                 conn.execute(
                     "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-                    (participant_id, username, actividad, cantidad, exact_points, datetime.utcnow().isoformat(), "evidencia_aprobada")
+                    (participant_id, username, actividad, cantidad, exact_points, utc_now_iso(), "evidencia_aprobada")
                 )
         conn.execute(
             "UPDATE evidence_messages SET status='approved' WHERE message_id=?",
@@ -663,7 +893,7 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
                         actividad,
                         removed_units,
                         exact_points,
-                        datetime.utcnow().isoformat(),
+                        utc_now_iso(),
                         f"mover_cierre_{snapshot_id}_resta_actual",
                     ),
                 )
@@ -776,7 +1006,7 @@ def _apply_snapshot_activity(
             actividad,
             cantidad,
             delta_points,
-            datetime.utcnow().isoformat(),
+            utc_now_iso(),
             f"cierre_{snapshot_id}_aprobado",
         ),
     )
@@ -878,7 +1108,7 @@ def adjust_snapshot_activity(snapshot_id: int, user_id: str, username: str, acti
                 actividad,
                 applied_units,
                 delta_points,
-                datetime.utcnow().isoformat(),
+                utc_now_iso(),
                 action,
             ),
         )
@@ -926,7 +1156,7 @@ def add_scout_alias(user_id: str, username: str, alias: str):
                 (normalized_alias, alias, user_id, username, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (normalized_alias, alias.strip(), str(user_id), username, datetime.utcnow().isoformat())
+            (normalized_alias, alias.strip(), str(user_id), username, utc_now_iso())
         )
         conn.commit()
     return True
@@ -992,7 +1222,7 @@ def subtract_activity(user_id: str, username: str, actividad: str, cantidad: int
         )
         conn.execute(
             "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
-            (user_id, username, actividad, real_sub, total_puntos, datetime.utcnow().isoformat(), "resta")
+            (user_id, username, actividad, real_sub, total_puntos, utc_now_iso(), "resta")
         )
         conn.commit()
     return total_puntos
@@ -1008,7 +1238,7 @@ def create_ranking_snapshot(period_start=None, period_end=None, reason: str = "m
     if not rows:
         return None
 
-    created_at = datetime.utcnow().isoformat()
+    created_at = utc_now_iso()
     period_start_text = isoformat_or_text(period_start)
     period_end_text = isoformat_or_text(period_end) or created_at
     with get_conn() as conn:
@@ -1124,6 +1354,29 @@ def set_bot_state(key: str, value: str):
         )
         conn.commit()
 
+def get_priority_min_points(default: int = DEFAULT_PRIORITY_MIN_POINTS) -> int:
+    raw = get_bot_state(PRIORITY_MIN_STATE_KEY)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return max(0, int(default))
+
+def set_priority_min_points(points: int) -> int:
+    value = max(0, int(points))
+    set_bot_state(PRIORITY_MIN_STATE_KEY, str(value))
+    return value
+
+def get_prio_status(puntos: int, minimum: int | None = None):
+    points = max(0, int(puntos or 0))
+    cutoff = get_priority_min_points() if minimum is None else max(0, int(minimum))
+    qualifies = points >= cutoff
+    return {
+        "points": points,
+        "minimum": cutoff,
+        "qualifies": qualifies,
+        "missing": max(0, cutoff - points),
+    }
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 COLS = ["kill_scout","kill_pelea","limpieza_aspecto","scouteo","mapeo"]
@@ -1144,12 +1397,11 @@ def calc_puntos_totales(row) -> int:
     return max(0, total + get_points_adjustment(row[0]))
 
 def get_nivel(puntos: int) -> tuple[str, str]:
-    points = max(0, int(puntos or 0))
-    for priority in PRIORITY_LEVELS:
-        max_points = priority["max"]
-        if points >= priority["min"] and (max_points is None or points <= max_points):
-            return priority["level"], priority["benefit"]
-    return "Inactivo", "Sin prioridad"
+    """Compatibilidad con cierres antiguos; RankingBot ya no usa niveles."""
+    status = get_prio_status(puntos)
+    if status["qualifies"]:
+        return "Con prio", f"Cumple el corte de {status['minimum']} puntos"
+    return "Sin prio", f"Le faltan {status['missing']} puntos"
 
 def normalize_name(name: str) -> str:
     text = unicodedata.normalize("NFKD", str(name or ""))

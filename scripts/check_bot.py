@@ -12,6 +12,8 @@ PYTHON_FILES = [
     "views.py",
     "config.py",
     "permissions.py",
+    "emojis.py",
+    "audit_log.py",
     "participants.py",
     "mapping_analysis.py",
     "ocr.py",

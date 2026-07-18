@@ -32,23 +32,40 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 
 ## Comandos
 
-| Comando | Descripción | Permisos |
+`/ranking` es la entrada principal. Detecta la jerarquia del usuario y abre uno
+de tres dashboards con botones, selectores y formularios. Los comandos de
+`/admin` se mantienen como respaldo.
+
+Los accesos se agrupan para mantener el panel compacto: **Operaciones** reúne
+evidencias, scout, puntos, padrón y publicaciones; **Admin** reúne prio,
+valores, exportaciones, AFK, cierres y sistema. Officer/Admin y GM/Lider
+también ven **Historial**, con los últimos 6 movimientos y la auditoría
+completa en Markdown (`.md`).
+
+| Jerarquia | Dashboard |
+|---|---|
+| General | **Mi Ranking**: top 3, puntos, posición y estado de prio |
+| Officer / Admin | **Evidencias y Puntos**: pendientes y últimas 3 evidencias |
+| GM / Lider | **Prio y Cierre**: clasificados, ranking actual, último cierre y próximo reset |
+
+| Comando | Descripción | Jerarquia |
 |---|---|---|
+| `/ranking` | Abre el dashboard correspondiente | General |
 | `/mi_ranking` | Tu perfil y puntos | Todos |
-| `/admin perfil usuario` | Perfil y puntos de cualquier scout | Admin |
-| `/admin conteo` | Calcula scouteo desde resumen diario y permite elegir ranking/cierre | Admin |
-| `/admin mover_conteo_cierre` | Mueve un conteo aprobado del ranking actual al cierre semanal | Admin |
-| `/admin analizar_mapeo` | Analiza logs de mapeo semanal | Admin |
-| `/admin reset_analisis` | Reinicia checkpoint semanal de mapeo | Admin |
-| `/admin dashboard_scouts` | Publica o actualiza dashboard de scouts | Admin |
-| `/admin info_ranking` | Publica la guia y ranking general | Admin |
-| `/admin prio minimo fuente` | Panel semanal para exportar y sincronizar rol prio | Admin |
-| `/admin afks` | Revisa hasta 25 AFKs, permite cambiar puntos, descartar falsos positivos y kickear restantes | Admin/GM |
-| `/admin puntos fuente` | Panel para sumar o restar puntos en masa por actividad, en ranking actual o ultimo cierre | Admin |
-| `/admin modificar_puntos fuente` | Suma o resta actividades a un scout, en ranking actual o ultimo cierre | Admin |
-| `/admin padron` | Panel para exportar/importar aliases por XLSX y editar alts manualmente | Admin |
-| `/admin export_ranking fuente formato` | Exporta el ranking actual o el ultimo cierre semanal como Excel o CSV | Admin |
-| `/admin reset_ranking` | Resetea todos los puntos del ranking | Admin |
+| `/admin perfil usuario` | Perfil y puntos de cualquier scout | Officer / Admin |
+| `/admin conteo` | Calcula scouteo desde resumen diario y permite elegir ranking/cierre | Officer / Admin |
+| `/admin analizar_mapeo` | Analiza logs de mapeo semanal | Officer / Admin |
+| `/admin puntos fuente` | Panel para sumar o restar puntos auditados | Officer / Admin |
+| `/admin modificar_puntos fuente` | Ajusta actividades de un scout | Officer / Admin |
+| `/admin padron` | Administra aliases y alts | Officer / Admin |
+| `/admin info_ranking` | Publica la guia y ranking general | Officer / Admin |
+| `/admin mover_conteo_cierre` | Mueve un conteo aprobado al cierre semanal | GM / Lider |
+| `/admin reset_analisis` | Reinicia el checkpoint de mapeo | GM / Lider |
+| `/admin dashboard_scouts` | Publica o actualiza el dashboard | GM / Lider |
+| `/admin prio minimo fuente` | Revisa y sincroniza el rol prio | GM / Lider |
+| `/admin afks` | Audita AFKs de dos semanas y permite kickear | GM / Lider |
+| `/admin export_ranking fuente formato` | Exporta Excel o CSV | GM / Lider |
+| `/admin reset_ranking` | Cierra y resetea el ranking | GM / Lider |
 
 ## Cierres semanales
 
@@ -63,12 +80,37 @@ Para corregir esa semana usa `/admin modificar_puntos fuente:Ultimo cierre seman
 
 Los resúmenes diarios aprobados acumulan minutos y mapas válidos por scout durante la semana. Se requieren al menos 4 horas acumuladas para habilitar puntos; desde entonces, cada 3 mapas válidos acumulados generan una unidad de scouteo. MapasBot solo reporta un mapa como válido cuando acumula al menos 1 hora de cobertura y conserva entre días los minutos pendientes por mapa. Los mapas sobrantes se conservan y los resúmenes rechazados no modifican el saldo. El saldo actual se limpia junto con el reset semanal del ranking.
 
-## Niveles
+Durante la revision, Officer/Admin puede abrir **Multiplicador**, elegir una
+persona y ajustar su valor entre `x0.70` y `x1.00`. El cambio recalcula los
+puntos finales sin consumir minutos o mapas hasta que la evidencia sea
+aprobada.
 
-| Nivel | Puntos | Beneficio |
-|---|---|---|
-| S | 120+ | Máxima prioridad |
-| A | 80–119 | Alta prioridad |
-| B | 50–79 | Prioridad media |
-| C | 20–49 | Prioridad básica |
-| Inactivo | <20 | Sin prioridad |
+Los paneles públicos se refrescan al crear, aprobar o rechazar una evidencia,
+al cambiar valores y después de cada cierre. La auditoría manual sigue siendo
+obligatoria: detectar o contar una evidencia nunca entrega puntos por sí solo.
+
+## Prio
+
+RankingBot no usa niveles S/A/B/C. Solo existe un numero configurable de
+puntos para la prio. Los perfiles muestran puntos actuales, corte, si califica
+y cuantos puntos faltan.
+
+## Emojis
+
+Los PNG estan en `assets/discord/emojis/` y sus IDs de Discord ya quedaron
+registrados en `emojis.py`. RankingBot los aplica a dashboards, mensajes,
+botones y reacciones. Las variables de `.env` permiten reemplazar cualquier ID
+sin tocar el codigo; el emoji Unicode queda como respaldo.
+
+## Historial
+
+RankingBot guarda en SQLite cada cambio administrativo importante: revisiones
+de evidencias, participantes, multiplicadores, puntos, mapeo, prio, padron,
+AFKs, publicaciones, exportaciones, configuracion y cierres. Cada evento
+conserva fecha UTC, responsable, objetivo, resumen y detalles antes/despues
+cuando corresponde.
+
+La descarga se genera desde `/ranking` > **Historial** > **Exportar MD** y
+contiene todos los eventos, del mas reciente al mas antiguo. Consultar o
+actualizar visualmente un panel no genera ruido; las exportaciones y acciones
+que cambian datos si quedan registradas.

@@ -1,28 +1,49 @@
-# Mapeo visual de actividades
+import os
+
+from emojis import activity_text_emoji
+
+
+# Mapeo visual de actividades. El catalogo central permite activar los emojis
+# personalizados con variables de entorno sin tocar los paneles.
 ACTIVIDADES = {
-    "kill_scout":       {"label": "Kill Scout",        "emoji": "🎯"},
-    "kill_pelea":       {"label": "Kill Pelea",         "emoji": "⚔️"},
-    "limpieza_aspecto": {"label": "Limpieza Aspecto",   "emoji": "🧹"},
-    "scouteo":          {"label": "Scouteo",            "emoji": "👁️"},
-    "mapeo":            {"label": "Mapeo",              "emoji": "🗺️"},
+    "kill_scout":       {"label": "Kill Scout",       "emoji": activity_text_emoji("kill_scout")},
+    "kill_pelea":       {"label": "Kill Pelea",       "emoji": activity_text_emoji("kill_pelea")},
+    "limpieza_aspecto": {"label": "Limpieza Aspecto", "emoji": activity_text_emoji("limpieza_aspecto")},
+    "scouteo":          {"label": "Scouteo",          "emoji": activity_text_emoji("scouteo")},
+    "mapeo":            {"label": "Mapeo",            "emoji": activity_text_emoji("mapeo")},
 }
 
-COLOR_PANEL    = 0x2F3136
-COLOR_RANKING  = 0xFFD700
-COLOR_PERFIL   = 0x5865F2
-COLOR_SUCCESS  = 0x57F287
-COLOR_ERROR    = 0xED4245
-COLOR_WARNING  = 0xFEE75C
+COLOR_PANEL    = 0x315A8A  # azul heráldico
+COLOR_RANKING  = 0xE0A82E  # oro
+COLOR_PERFIL   = 0x2D9CB8  # turquesa scout
+COLOR_SUCCESS  = 0x3FAE62  # verde escudo
+COLOR_ERROR    = 0xD94A4A  # rojo lacre
+COLOR_WARNING  = 0xE58B2A  # ámbar
 
 APPLICATION_ID = "1505978418867605565"
 
 # IDs configurables
 GUILD_ID = 1435778823743340650
 
-ADMIN_ROLE_IDS = {"1435778823743340652"}
-REVIEWER_ROLE_IDS = {"1435778823743340652", "1505949443529375845"}
-GM_ROLE_IDS = {"1435778823743340652"}
-PRIORITY_PROTECTED_ROLE_IDS = ADMIN_ROLE_IDS | REVIEWER_ROLE_IDS
+def _role_ids(name: str, defaults: set[str]):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return set(defaults)
+    return {item.strip() for item in raw.split(",") if item.strip().isdigit()}
+
+
+ADMIN_ROLE_IDS = _role_ids("RANKING_ADMIN_ROLE_IDS", {"1435778823743340652"})
+REVIEWER_ROLE_IDS = _role_ids(
+    "RANKING_OFFICER_ROLE_IDS",
+    {"1435778823743340652", "1505949443529375845"},
+)
+GM_ROLE_IDS = _role_ids("RANKING_GM_LEADER_ROLE_IDS", {"1435778823743340652"})
+# Jerarquia funcional del bot:
+# 0 General · 1 Officer/Admin · 2 GM/Lider.
+# Los conjuntos conservan los IDs existentes y se pueden ampliar en despliegue.
+OFFICER_ADMIN_ROLE_IDS = ADMIN_ROLE_IDS | REVIEWER_ROLE_IDS
+GM_LEADER_ROLE_IDS = GM_ROLE_IDS
+PRIORITY_PROTECTED_ROLE_IDS = ADMIN_ROLE_IDS | REVIEWER_ROLE_IDS | GM_ROLE_IDS
 
 EVIDENCE_CATEGORY_ID = 1505954373275095291
 EVIDENCE_CATEGORY_IDS = {1505954373275095291, 15059543732775095291}

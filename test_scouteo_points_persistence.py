@@ -107,6 +107,49 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         self.assertEqual(projection["total_minutes"], 0)
         self.assertEqual(projection["total_maps"], 0)
 
+    def test_reviewer_can_change_one_multiplier_before_approval(self):
+        self.database.create_evidence_review(
+            "review-multiplier",
+            "1",
+            "Scout",
+            "scouteo",
+            [("1", "Scout", 6, 30)],
+        )
+        self.database.set_scouteo_contributions(
+            "review-multiplier",
+            [("1", 240, 18, 4, 3, 100)],
+        )
+
+        before = self.database.get_scouteo_review_rows("review-multiplier")[0]
+        self.assertEqual(before["multiplier_hundredths"], 100)
+        self.assertEqual(before["points"], 30)
+
+        result = self.database.set_scouteo_review_multiplier(
+            "review-multiplier",
+            "1",
+            95,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["row"]["multiplier_hundredths"], 95)
+        self.assertEqual(result["row"]["points"], 29)
+        self.assertEqual(
+            self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_minutes"],
+            0,
+        )
+
+        self.database.approve_evidence("review-multiplier")
+        scout = self.database.get_scout("1")
+        self.assertEqual(scout[5], 6)
+        self.assertEqual(self.database.calc_puntos_totales(scout), 29)
+
+        locked = self.database.set_scouteo_review_multiplier(
+            "review-multiplier",
+            "1",
+            100,
+        )
+        self.assertFalse(locked["ok"])
+        self.assertEqual(locked["reason"], "already_reviewed")
+
 
 if __name__ == "__main__":
     unittest.main()

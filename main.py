@@ -15,6 +15,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from database import (
     add_activity,
     add_evidence_participants,
@@ -23,6 +25,7 @@ from database import (
     calc_puntos_totales,
     create_ranking_snapshot,
     create_evidence_review,
+    get_audit_events,
     get_evidence_by_thread,
     get_evidence_participants as db_get_evidence_participants,
     get_evidence_review_message_id,
@@ -32,8 +35,12 @@ from database import (
     get_scouteo_projection,
     get_latest_ranking_snapshot,
     get_puntos,
-    get_nivel,
     get_pending_evidence_message_ids,
+    get_pending_count,
+    get_priority_min_points,
+    get_prio_status,
+    get_recent_evidence,
+    get_scout,
     get_scout_aliases,
     find_scout_alias,
     get_ranking_snapshot,
@@ -42,15 +49,17 @@ from database import (
     init_db,
     move_evidence_to_snapshot,
     remove_scout_alias,
+    record_audit_event,
     reset_all,
     set_bot_state,
     set_scouteo_contributions,
     set_evidence_thread,
     set_evidence_review_message,
     set_puntos,
+    set_priority_min_points,
     subtract_activity,
 )
-from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_RANKING, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
+from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_PERFIL, COLOR_RANKING, COLOR_SUCCESS, COLOR_ERROR, COLOR_WARNING, \
     DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     WEEKLY_EXPORT_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
@@ -64,11 +73,26 @@ from views import (
     EvidenceReviewView,
     EvidenceReviewerSuggestionConfirmView,
     InfoRankingView,
+    PointsSelectView,
+    ResetView,
     build_participant_resolution_embed,
     refresh_review_participants,
 )
-from embeds import build_dashboard_embed, build_info_ranking_embed, build_perfil_embed, build_priority_caps_embed
-from permissions import can_review_member, is_admin, is_gm_member
+from embeds import (
+    build_dashboard_embed,
+    build_info_ranking_embed,
+    build_perfil_embed,
+    build_priority_requirement_embed,
+)
+from permissions import (
+    AccessLevel,
+    can_review_member,
+    get_access_level,
+    is_admin,
+    is_gm_member,
+)
+from emojis import button_emoji, reaction_emoji, reaction_variants, text_emoji
+from audit_log import audit_action_label, build_audit_markdown
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
 import mapping_analysis
@@ -79,7 +103,6 @@ from scouteo_scoring import (
     parse_multiplier_hundredths,
 )
 
-load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
@@ -123,6 +146,30 @@ EXPORT_FORMAT_CHOICES = [
     app_commands.Choice(name="CSV", value="csv"),
 ]
 admin_group = app_commands.Group(name="admin", description="Herramientas de administracion del ranking")
+
+
+def record_interaction_audit(
+    interaction: discord.Interaction,
+    category: str,
+    action: str,
+    *,
+    target_type: str | None = None,
+    target_id: str | int | None = None,
+    summary: str = "",
+    details: dict | None = None,
+):
+    user = interaction.user
+    return record_audit_event(
+        category,
+        action,
+        actor_id=str(user.id),
+        actor_name=getattr(user, "display_name", None) or getattr(user, "name", None) or str(user),
+        target_type=target_type,
+        target_id=str(target_id) if target_id is not None else None,
+        summary=summary,
+        details=details,
+    )
+
 
 async def send_interaction_error(interaction: discord.Interaction, message: str):
     try:
@@ -218,7 +265,7 @@ async def on_message(message: discord.Message):
         return
 
     analyzing_embed = discord.Embed(
-        title="Analizando evidencia",
+        title=f"{text_emoji('AUDIT')} Analizando evidencia",
         description="OCR en proceso. En breve se enviara a revision.",
         color=COLOR_WARNING
     )
@@ -252,18 +299,37 @@ async def on_message(message: discord.Message):
     )
     if pts <= 0:
         print("[EVIDENCE] duplicado")
+        await analyzing_msg.edit(
+            embed=discord.Embed(
+                title=f"{text_emoji('AUDIT')} Evidencia registrada",
+                description="Este mensaje ya tiene una revisión.",
+                color=COLOR_PANEL,
+            )
+        )
+        asyncio.create_task(delete_message_after(analyzing_msg))
         return
+    record_audit_event(
+        "evidencias",
+        "crear_revision",
+        actor_id=str(message.author.id),
+        actor_name=message.author.display_name,
+        target_type="evidencia",
+        target_id=str(message.id),
+        summary=f"Envio {actividad} a revision con {len(participants) or 1} participante(s).",
+        details={
+            "actividad": actividad,
+            "participantes": len(participants) or 1,
+            "canal_id": str(message.channel.id),
+        },
+    )
 
     review_channel = await get_review_channel(message)
     embed = discord.Embed(
-        title="Evidencia pendiente",
+        title=f"{text_emoji('PENDING')} Evidencia pendiente",
         color=COLOR_WARNING,
         description=(
-            f"Usuario: {message.author.mention}\n"
-            f"Actividad: **{ACTIVIDADES[actividad]['label']}**\n"
-            f"Confianza OCR: **{ocr_confidence}**\n"
-            f"Puntos: `{pts}`\n"
-            f"Canal: {message.channel.mention}\n"
+            f"{message.author.mention} · **{ACTIVIDADES[actividad]['label']}** · `{pts} pts`\n"
+            f"OCR: **{ocr_confidence}** · {message.channel.mention}\n"
             f"[Abrir evidencia]({message.jump_url})"
         )
     )
@@ -295,6 +361,7 @@ async def on_message(message: discord.Message):
         view=EvidenceReviewView(str(message.id))
     )
     set_evidence_review_message(str(message.id), str(review_msg.id))
+    await refresh_public_messages_from_message(message)
     print(f"[EVIDENCE] enviado review={review_msg.id}")
 
     participant_thread = None
@@ -326,13 +393,20 @@ async def on_message(message: discord.Message):
     if participant_thread:
         done_description += f"\nHilo de participantes: {participant_thread.mention}"
     done_embed = discord.Embed(
-        title="Evidencia enviada a revision",
+        title=f"{text_emoji('APPROVED')} Evidencia enviada a revisión",
         description=done_description,
         color=COLOR_SUCCESS
     )
     await analyzing_msg.edit(embed=done_embed)
-    await asyncio.sleep(60)
-    await analyzing_msg.delete()
+    asyncio.create_task(delete_message_after(analyzing_msg))
+
+
+async def delete_message_after(message: discord.Message, delay: int = 60):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
 
 
 # ── Bromas / respuestas automáticas ───────────────────────────────────────────
@@ -412,19 +486,20 @@ def is_supported_image(attachment: discord.Attachment):
     return content_type.startswith("image/") or filename.endswith(IMAGE_EXTENSIONS)
 
 async def set_pending_source_reaction(message: discord.Message):
-    for emoji in (
-        "\N{WHITE HEAVY CHECK MARK}",
-        "\N{CROSS MARK}",
-        "\N{OUTBOX TRAY}",
-        "\N{HOURGLASS}",
-    ):
+    old_reactions = (
+        reaction_variants("APPROVED")
+        + reaction_variants("REJECTED")
+        + reaction_variants("PENDING")
+        + ["\N{OUTBOX TRAY}"]
+    )
+    for emoji in old_reactions:
         await remove_bot_reaction(message, emoji)
     try:
-        await message.add_reaction("\N{HOURGLASS}")
+        await message.add_reaction(reaction_emoji("PENDING"))
     except discord.HTTPException:
         pass
 
-async def remove_bot_reaction(message: discord.Message, emoji: str):
+async def remove_bot_reaction(message: discord.Message, emoji):
     bot_user = message.guild.me if message.guild else bot.user
     if not bot_user:
         return
@@ -814,10 +889,28 @@ async def create_scouteo_count_review(
         print("[SCOUTEO SUMMARY] duplicado")
         return False
     set_scouteo_contributions(str(message.id), contributions)
+    record_audit_event(
+        "evidencias",
+        "crear_revision_scouteo",
+        actor_id=str(message.author.id),
+        actor_name=message.author.display_name,
+        target_type="evidencia",
+        target_id=str(message.id),
+        summary=(
+            f"Creo una revision de scouteo para {len(participant_rows)} participante(s), "
+            f"destino {target_label}."
+        ),
+        details={
+            "participantes": len(participant_rows),
+            "horas_minimas": hours_per_point,
+            "mapas_por_unidad": maps_per_point,
+            "destino_cierre": target_snapshot_id,
+        },
+    )
 
     review_channel = await get_review_channel(message)
     embed = discord.Embed(
-        title="Evidencia pendiente",
+        title=f"{text_emoji('PENDING')} Evidencia pendiente",
         color=COLOR_WARNING,
         description=(
             f"**{ACTIVIDADES['scouteo']['label']}** · Resumen del Día → **{target_label}**\n"
@@ -1009,6 +1102,19 @@ async def handle_evidence_thread_message(message: discord.Message):
             await message.reply("Esta evidencia ya fue revisada.", mention_author=False)
             return True
         added = participants
+        record_audit_event(
+            "participantes",
+            "agregar_a_evidencia",
+            actor_id=str(message.author.id),
+            actor_name=message.author.display_name,
+            target_type="evidencia",
+            target_id=evidence_message_id,
+            summary=f"Agrego {len(participants)} participante(s) desde el hilo de evidencia.",
+            details={
+                "origen": "hilo_de_evidencia",
+                "participantes": ", ".join(f"{name} ({user_id})" for user_id, name, *_ in participants),
+            },
+        )
         if review_message:
             await refresh_review_participants(review_message, evidence_message_id)
 
@@ -1128,8 +1234,8 @@ async def mover_conteo_cierre(
     id_mensaje: str,
     cierre_id: int | None = None,
 ):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
     message_id = str(id_mensaje).strip()
@@ -1149,6 +1255,20 @@ async def mover_conteo_cierre(
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
+    record_interaction_audit(
+        interaction,
+        "cierres",
+        "mover_conteo",
+        target_type="evidencia",
+        target_id=message_id,
+        summary=f"Movio el conteo al cierre #{snapshot[0]} ({result.get('status')}).",
+        details={
+            "cierre_id": snapshot[0],
+            "actividad": result.get("activity"),
+            "estado": result.get("status"),
+            "participantes": len(result.get("participants") or []),
+        },
+    )
     if result["status"] == "approved_moved":
         await publish_or_update_dashboard()
         await publish_or_update_info_ranking()
@@ -1167,7 +1287,7 @@ def build_move_count_error_embed(message_id: str, result: dict):
         "invalid_activity": f"Esa actividad no se puede mover automaticamente: `{result.get('activity')}`.",
     }
     embed = discord.Embed(
-        title="No pude mover el conteo",
+        title=f"{text_emoji('REJECTED')} No pude mover el conteo",
         description=messages.get(reason, f"Estado no soportado: `{reason or result.get('status')}`"),
         color=COLOR_ERROR,
     )
@@ -1178,7 +1298,7 @@ def build_move_count_error_embed(message_id: str, result: dict):
 def build_move_count_result_embed(message_id: str, snapshot, result: dict):
     if result["status"] == "pending_retargeted":
         embed = discord.Embed(
-            title="Conteo redirigido al cierre",
+            title=f"{text_emoji('CALENDAR')} Conteo redirigido al cierre",
             description=(
                 f"El conteo aun estaba pendiente, asi que ahora al aprobarse ira al cierre `#{snapshot[0]}`.\n"
                 f"ID mensaje: `{message_id}`"
@@ -1203,7 +1323,7 @@ def build_move_count_result_embed(message_id: str, snapshot, result: dict):
         if item.get("removed_units", item["units"]) < item["units"]
     ]
     embed = discord.Embed(
-        title="Conteo movido al cierre semanal",
+        title=f"{text_emoji('CALENDAR')} Conteo movido al cierre semanal",
         description=(
             f"ID mensaje: `{message_id}`\n"
             f"Destino: **Cierre semanal #{snapshot[0]} ({snapshot[3]})**\n"
@@ -1243,7 +1363,7 @@ def build_scouteo_count_embed(
         for record in records
     )
     embed = discord.Embed(
-        title="Conteo de scouteo",
+        title=f"{text_emoji('SCOUT')} Conteo de Scouteo",
         description=(
             f"Mensaje: [abrir resumen]({source_message.jump_url})\n"
             f"Destino: **{target_label}**\n"
@@ -1328,21 +1448,33 @@ class ScouteoCountView(SafeView):
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Horas", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Horas",
+        emoji=button_emoji("PENDING"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def change_hours(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso para editar este conteo.", ephemeral=True)
             return
         await interaction.response.send_modal(ScouteoCountRuleModal(self, "hours"))
 
-    @discord.ui.button(label="Mapas", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Mapas",
+        emoji=button_emoji("MAP"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def change_maps(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso para editar este conteo.", ephemeral=True)
             return
         await interaction.response.send_modal(ScouteoCountRuleModal(self, "maps"))
 
-    @discord.ui.button(label="Enviar a revision", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Revisión",
+        emoji=button_emoji("EVIDENCE"),
+        style=discord.ButtonStyle.success,
+    )
     async def send_review(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso para enviar este conteo.", ephemeral=True)
@@ -1360,6 +1492,22 @@ class ScouteoCountView(SafeView):
             await interaction.response.send_message("No se pudo crear la revision. Puede que ya exista o no haya puntos.", ephemeral=True)
             return
 
+        record_interaction_audit(
+            interaction,
+            "evidencias",
+            "preparar_conteo_scouteo",
+            target_type="evidencia",
+            target_id=self.source_message.id,
+            summary=(
+                f"Preparo el conteo de scouteo para {self.target_label} "
+                f"con regla {self.hours_per_point}h / {self.maps_per_point} mapas."
+            ),
+            details={
+                "destino_cierre": self.target_snapshot_id,
+                "horas_minimas": self.hours_per_point,
+                "mapas_por_unidad": self.maps_per_point,
+            },
+        )
         for item in self.children:
             item.disabled = True
         set_bot_state(
@@ -1400,10 +1548,27 @@ class ScouteoCountRuleModal(SafeModal):
             await interaction.response.send_message("Ingresa un numero mayor a 0.", ephemeral=True)
             return
 
+        previous = (
+            self.view_ref.hours_per_point
+            if self.target == "hours"
+            else self.view_ref.maps_per_point
+        )
         if self.target == "hours":
             self.view_ref.hours_per_point = amount
         else:
             self.view_ref.maps_per_point = amount
+        record_interaction_audit(
+            interaction,
+            "scouteo",
+            "cambiar_regla_conteo",
+            target_type="evidencia",
+            target_id=self.view_ref.source_message.id,
+            summary=(
+                f"Cambio {'horas minimas' if self.target == 'hours' else 'mapas por unidad'} "
+                f"de {previous} a {amount}."
+            ),
+            details={"regla": self.target, "antes": previous, "despues": amount},
+        )
         await self.view_ref.refresh(interaction)
 
 
@@ -1636,7 +1801,7 @@ def build_mapeo_analysis_embed(
     total_weight = sum(row["score"] for row in analysis["ranking"])
     top_weight = max((row["score"] for row in analysis["ranking"]), default=0)
     embed = discord.Embed(
-        title="Analisis de mapeo",
+        title=f"{text_emoji('MAP')} Análisis de Mapeo",
         description=(
             f"Canal: <#{MAPEO_LOG_CHANNEL_ID}>\n"
             f"Destino: **{target_label}**\n"
@@ -1781,7 +1946,11 @@ class MapeoAnalysisView(SafeView):
         self.checkpoint_source = checkpoint_source
         self.range_fallback = range_fallback
 
-    @discord.ui.button(label="Enviar a administrar evidencias", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Revisión",
+        emoji=button_emoji("EVIDENCE"),
+        style=discord.ButtonStyle.success,
+    )
     async def send_to_review(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso para confirmar este analisis.", ephemeral=True)
@@ -1822,6 +1991,19 @@ class MapeoAnalysisView(SafeView):
         )
         review_message = await review_channel.send(embed=embed, view=review_view)
         review_view.message = review_message
+        record_interaction_audit(
+            interaction,
+            "mapeo",
+            "enviar_a_revision",
+            target_type="mensaje_revision",
+            target_id=review_message.id,
+            summary=f"Envio el analisis de mapeo a revision para {self.target_label}.",
+            details={
+                "eventos_escaneados": self.scanned,
+                "jugadores": len(self.analysis.get("ranking") or []),
+                "destino_cierre": self.target_snapshot_id,
+            },
+        )
 
         for item in self.children:
             item.disabled = True
@@ -1901,28 +2083,44 @@ class MapeoReviewView(SafeView):
             self.relock_weight,
         )
 
-    @discord.ui.button(label="Tope unidades", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Tope",
+        emoji=button_emoji("SETTINGS"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def change_units(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_modal(MapeoMaxUnitsModal(self))
 
-    @discord.ui.button(label="Valor Mapeo", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Valor",
+        emoji=button_emoji("POINTS"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def change_mapeo_value(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_modal(MapeoActivityValueModal(self))
 
-    @discord.ui.button(label="Pesos", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Pesos",
+        emoji=button_emoji("MULTIPLIER"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def change_weights(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_modal(MapeoScoringModal(self))
 
-    @discord.ui.button(label="Aprobar", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Aprobar",
+        emoji=button_emoji("APPROVED"),
+        style=discord.ButtonStyle.success,
+    )
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -1959,6 +2157,25 @@ class MapeoReviewView(SafeView):
         if self.latest_event_at:
             set_bot_state(self.checkpoint_key, self.latest_event_at.isoformat())
 
+        record_interaction_audit(
+            interaction,
+            "mapeo",
+            "aprobar_analisis",
+            target_type="cierre" if self.target_snapshot_id else "ranking_actual",
+            target_id=self.target_snapshot_id,
+            summary=(
+                f"Aplico {applied_units_total} unidades y {total_points} puntos de mapeo "
+                f"a {len(awards) - len(failed)} jugador(es)."
+            ),
+            details={
+                "destino": self.target_label,
+                "unidades": applied_units_total,
+                "puntos": total_points,
+                "jugadores": len(awards) - len(failed),
+                "omitidos_sin_id": len(skipped),
+                "fallidos": len(failed),
+            },
+        )
         for item in self.children:
             item.disabled = True
         skipped_text = f" No aplicados sin ID: {', '.join(skipped[:5])}." if skipped else ""
@@ -1978,12 +2195,24 @@ class MapeoReviewView(SafeView):
             await publish_or_update_dashboard()
             await publish_or_update_info_ranking()
 
-    @discord.ui.button(label="Rechazar", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="Rechazar",
+        emoji=button_emoji("REJECTED"),
+        style=discord.ButtonStyle.danger,
+    )
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
 
+        record_interaction_audit(
+            interaction,
+            "mapeo",
+            "rechazar_analisis",
+            target_type="cierre" if self.target_snapshot_id else "ranking_actual",
+            target_id=self.target_snapshot_id,
+            summary=f"Rechazo el analisis de mapeo para {self.target_label}; el rango quedo abierto.",
+        )
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
@@ -2009,7 +2238,16 @@ class MapeoMaxUnitsModal(SafeModal):
             await interaction.response.send_message("Ingresa un numero mayor a 0.", ephemeral=True)
             return
 
+        previous = self.review_view.max_units
         self.review_view.max_units = max_units
+        record_interaction_audit(
+            interaction,
+            "mapeo",
+            "cambiar_tope",
+            target_type="revision_mapeo",
+            summary=f"Cambio el tope de unidades de {previous} a {max_units}.",
+            details={"antes": previous, "despues": max_units},
+        )
         await interaction.response.defer(ephemeral=True)
         if self.review_view.message:
             await self.review_view.message.edit(
@@ -2023,7 +2261,7 @@ class MapeoActivityValueModal(SafeModal):
     value = discord.ui.TextInput(label="Valor de cada unidad Mapeo", placeholder="Ej: 3", max_length=3)
 
     def __init__(self, review_view: MapeoReviewView):
-        super().__init__(title="Cambiar valor Mapeo")
+        super().__init__(title="Cambiar valor de Mapeo")
         self.review_view = review_view
         self.value.default = str(get_puntos("mapeo") or 1)
 
@@ -2036,7 +2274,17 @@ class MapeoActivityValueModal(SafeModal):
             await interaction.response.send_message("Ingresa un numero mayor a 0.", ephemeral=True)
             return
 
+        previous = get_puntos("mapeo") or 0
         set_puntos("mapeo", mapeo_value)
+        record_interaction_audit(
+            interaction,
+            "configuracion",
+            "cambiar_valor_actividad",
+            target_type="actividad",
+            target_id="mapeo",
+            summary=f"Mapeo: {previous} -> {mapeo_value} puntos por unidad.",
+            details={"antes": previous, "despues": mapeo_value},
+        )
         await interaction.response.defer(ephemeral=True)
         if self.review_view.message:
             await self.review_view.message.edit(
@@ -2071,9 +2319,33 @@ class MapeoScoringModal(SafeModal):
             await interaction.response.send_message("Ingresa valores validos. Road debe ser mayor a 0.", ephemeral=True)
             return
 
+        previous = {
+            "road": self.review_view.road_weight,
+            "priority": self.review_view.priority_weight,
+            "relock": self.review_view.relock_weight,
+        }
         self.review_view.road_weight = road_weight
         self.review_view.priority_weight = priority_weight
         self.review_view.relock_weight = relock_weight
+        record_interaction_audit(
+            interaction,
+            "mapeo",
+            "cambiar_pesos",
+            target_type="revision_mapeo",
+            summary=(
+                f"Pesos Road/Priority/RELOCK: "
+                f"{previous['road']}/{previous['priority']}/{previous['relock']} -> "
+                f"{road_weight}/{priority_weight}/{relock_weight}."
+            ),
+            details={
+                "road_antes": previous["road"],
+                "priority_antes": previous["priority"],
+                "relock_antes": previous["relock"],
+                "road_despues": road_weight,
+                "priority_despues": priority_weight,
+                "relock_despues": relock_weight,
+            },
+        )
         await interaction.response.defer(ephemeral=True)
         if self.review_view.message:
             await self.review_view.message.edit(
@@ -2085,12 +2357,20 @@ class MapeoScoringModal(SafeModal):
 
 @admin_group.command(name="reset_analisis", description="Reinicia el checkpoint semanal del analisis de mapeo")
 async def reset_analisis_mapeo(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
     week_start = current_weekly_ranking_start()
     set_bot_state(MAPEO_ANALYSIS_CHECKPOINT_KEY, week_start.isoformat())
+    record_interaction_audit(
+        interaction,
+        "mapeo",
+        "reiniciar_checkpoint",
+        target_type="checkpoint",
+        target_id=MAPEO_ANALYSIS_CHECKPOINT_KEY,
+        summary=f"Reinicio el checkpoint a {week_start.strftime('%Y-%m-%d %H:%M UTC')}.",
+    )
     await interaction.response.send_message(
         f"Checkpoint de mapeo reiniciado a `{week_start.strftime('%Y-%m-%d %H:%M UTC')}`.",
         ephemeral=True,
@@ -2099,11 +2379,19 @@ async def reset_analisis_mapeo(interaction: discord.Interaction):
 
 @admin_group.command(name="dashboard_scouts", description="Publica o actualiza el dashboard de scouts")
 async def dashboard_scouts(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
     await publish_or_update_dashboard()
+    record_interaction_audit(
+        interaction,
+        "publicaciones",
+        "actualizar_dashboard",
+        target_type="canal",
+        target_id=DASHBOARD_CHANNEL_ID,
+        summary="Actualizo el dashboard publico de scouts.",
+    )
     await interaction.response.send_message("Dashboard actualizado.", ephemeral=True)
 
 
@@ -2115,7 +2403,12 @@ async def publish_or_update_dashboard():
     embed = build_dashboard_embed()
     dashboard_msg = None
     async for msg in channel.history(limit=20):
-        if msg.author.id == bot.user.id and msg.embeds and "Dashboard Scouts" in (msg.embeds[0].title or ""):
+        title = msg.embeds[0].title if msg.embeds else ""
+        if msg.author.id == bot.user.id and (
+            "Ranking Semanal" in (title or "") or
+            "Salon del Ranking" in (title or "") or
+            "Dashboard Scouts" in (title or "")
+        ):
             dashboard_msg = msg
             break
 
@@ -2130,6 +2423,885 @@ async def publish_or_update_dashboard():
 async def mi_ranking(interaction: discord.Interaction):
     embed = build_perfil_embed(str(interaction.user.id), interaction.user.display_name)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="ranking", description="Abre RankingBot con las herramientas de tu jerarquia")
+async def ranking_hub(interaction: discord.Interaction):
+    level = get_access_level(interaction.user)
+    await interaction.response.send_message(
+        embed=build_hierarchy_dashboard_embed(interaction.user, level),
+        view=RankingHierarchyView(level),
+        ephemeral=True,
+    )
+
+
+def build_hierarchy_dashboard_embed(member, level: AccessLevel):
+    cutoff = get_priority_min_points()
+    ranking = sorted(get_all_scouts(), key=calc_puntos_totales, reverse=True)
+    if level == AccessLevel.GENERAL:
+        scout = get_scout(str(member.id))
+        points = calc_puntos_totales(scout) if scout else 0
+        position = next(
+            (index for index, row in enumerate(ranking, start=1) if str(row[0]) == str(member.id)),
+            None,
+        )
+        status = get_prio_status(points, cutoff)
+        position_text = f"#{position}" if position else "Sin posición"
+        prio_text = "Prio" if status["qualifies"] else f"Faltan {status['missing']} pts"
+        embed = discord.Embed(
+            title=f"{text_emoji('SCOUT')} Mi Ranking",
+            color=COLOR_PERFIL,
+        )
+        top_lines = [
+            f"**#{index} {row[1]}** · {calc_puntos_totales(row)} pts"
+            for index, row in enumerate(ranking[:3], start=1)
+        ]
+        embed.add_field(
+            name=f"{text_emoji('RANKING')} Top 3",
+            value="\n".join(top_lines) if top_lines else "Sin puntos.",
+            inline=False,
+        )
+        embed.add_field(
+            name=f"{text_emoji('POINTS')} Tú",
+            value=f"**{points} pts** · {position_text} · {prio_text}",
+            inline=False,
+        )
+        return embed
+
+    if level == AccessLevel.OFFICER_ADMIN:
+        embed = discord.Embed(
+            title=f"{text_emoji('AUDIT')} Evidencias y Puntos",
+            description=f"**{get_pending_count()} pendientes** · Prio: **{cutoff} pts**",
+            color=COLOR_PANEL,
+        )
+        recent = get_recent_evidence(3)
+        lines = [
+            format_recent_evidence_line(item)
+            for item in recent
+        ]
+        embed.add_field(
+            name=f"{text_emoji('EVIDENCE')} Últimas",
+            value="\n".join(lines) if lines else "Sin evidencias.",
+            inline=False,
+        )
+        return embed
+
+    latest = get_latest_ranking_snapshot()
+    qualifying = sum(1 for row in ranking if calc_puntos_totales(row) >= cutoff)
+    total_points = sum(calc_puntos_totales(row) for row in ranking)
+    next_reset = next_weekly_reset_at()
+    embed = discord.Embed(
+        title=f"{text_emoji('PRIO')} Prio y Cierre",
+        description=f"**{qualifying}** califican · Corte: **{cutoff} pts**",
+        color=COLOR_RANKING,
+    )
+    embed.add_field(
+        name=f"{text_emoji('RANKING')} Actual",
+        value=f"**{len(ranking)} scouts** · {total_points} pts",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"{text_emoji('CALENDAR')} Cierre",
+        value=(
+            f"**#{latest[0]}** · {latest[5]} scouts · {short_dashboard_date(latest[3])}"
+            if latest else
+            "Sin cierre."
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name=f"{text_emoji('PENDING')} Próximo",
+        value=f"<t:{int(next_reset.timestamp())}:R>",
+        inline=True,
+    )
+    return embed
+
+
+def format_recent_evidence_line(item: dict):
+    status_emoji = {
+        "pending": text_emoji("PENDING"),
+        "approved": text_emoji("APPROVED"),
+        "rejected": text_emoji("REJECTED"),
+    }.get(item.get("status"), text_emoji("EVIDENCE"))
+    activity = ACTIVIDADES.get(item.get("activity"), {}).get("label", item.get("activity") or "Evidencia")
+    return (
+        f"{status_emoji} **{activity}** · {item['points']} pts · "
+        f"{item['participants']}p"
+    )
+
+
+def short_dashboard_date(value):
+    text = str(value or "").replace("T", " ")
+    if len(text) >= 16:
+        return f"{text[8:10]}/{text[5:7]} {text[11:16]}"
+    return text or "-"
+
+
+class RankingHierarchyView(SafeView):
+    def __init__(self, level: AccessLevel):
+        super().__init__(timeout=900)
+        self.level = AccessLevel(level)
+        self.add_item(HubProfileButton())
+        self.add_item(HubRankingButton())
+        self.add_item(HubRequirementButton())
+        if self.level >= AccessLevel.OFFICER_ADMIN:
+            self.add_item(HubOperationsButton())
+        if self.level >= AccessLevel.GM_LEADER:
+            self.add_item(HubAdministrationButton())
+        if self.level >= AccessLevel.OFFICER_ADMIN:
+            self.add_item(HubAuditButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        current = get_access_level(interaction.user)
+        if current >= self.level:
+            return True
+        await interaction.response.send_message("Tu jerarquia ya no permite usar este panel.", ephemeral=True)
+        return False
+
+
+class HubOperationsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Operaciones",
+            emoji=button_emoji("EVIDENCE"),
+            style=discord.ButtonStyle.primary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_operations_embed(),
+            view=OperationsDashboardView(),
+            ephemeral=True,
+        )
+
+
+def build_operations_embed():
+    recent = get_recent_evidence(3)
+    lines = [format_recent_evidence_line(item) for item in recent]
+    embed = discord.Embed(
+        title=f"{text_emoji('EVIDENCE')} Operaciones",
+        description=f"**{get_pending_count()} pendientes**",
+        color=COLOR_PANEL,
+    )
+    embed.add_field(
+        name="Últimas",
+        value="\n".join(lines) if lines else "Sin evidencias.",
+        inline=False,
+    )
+    return embed
+
+
+class OperationsDashboardView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.add_item(HubEvidenceButton())
+        self.add_item(HubScoutProfileButton())
+        self.add_item(HubBulkPointsButton())
+        self.add_item(HubRosterButton())
+        self.add_item(HubPublishInfoButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_admin(interaction):
+            return True
+        await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+        return False
+
+
+class HubAdministrationButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Admin",
+            emoji=button_emoji("SETTINGS"),
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_administration_embed(),
+            view=AdministrationDashboardView(),
+            ephemeral=True,
+        )
+
+
+def build_administration_embed():
+    cutoff = get_priority_min_points()
+    latest = get_latest_ranking_snapshot()
+    next_reset = next_weekly_reset_at()
+    embed = discord.Embed(
+        title=f"{text_emoji('SETTINGS')} Admin",
+        description="Prio · cierres · sistema.",
+        color=COLOR_RANKING,
+    )
+    embed.add_field(
+        name=f"{text_emoji('PRIO')} Corte",
+        value=f"**{cutoff} pts**",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"{text_emoji('CALENDAR')} Cierre",
+        value=f"**#{latest[0]}** · {short_dashboard_date(latest[3])}" if latest else "Sin cierre.",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"{text_emoji('PENDING')} Próximo",
+        value=f"<t:{int(next_reset.timestamp())}:R>",
+        inline=True,
+    )
+    return embed
+
+
+class AdministrationDashboardView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.add_item(HubPriorityButton())
+        self.add_item(HubSettingsButton())
+        self.add_item(HubExportButton())
+        self.add_item(HubAfkButton())
+        self.add_item(HubClosureButton())
+        self.add_item(HubSystemButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_gm_member(interaction.user):
+            return True
+        await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+        return False
+
+
+class HubProfileButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Perfil",
+            emoji=button_emoji("SCOUT"),
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            embed=build_perfil_embed(str(interaction.user.id), interaction.user.display_name),
+            ephemeral=True,
+        )
+
+
+class HubRankingButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Ranking",
+            emoji=button_emoji("RANKING"),
+            style=discord.ButtonStyle.primary,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        from embeds import build_ranking_embed
+        from views import RankingPaginationView
+
+        await interaction.response.send_message(
+            embed=build_ranking_embed(page=0, per_page=10),
+            view=RankingPaginationView(page=0),
+            ephemeral=True,
+        )
+
+
+class HubRequirementButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Prio",
+            emoji=button_emoji("PRIO"),
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            embed=build_priority_requirement_embed(),
+            ephemeral=True,
+        )
+
+
+class HubEvidenceButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Evidencias",
+            emoji=button_emoji("EVIDENCE"),
+            style=discord.ButtonStyle.primary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_review_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        channel_text = f"<#{EVIDENCE_REVIEW_CHANNEL_ID}>" if EVIDENCE_REVIEW_CHANNEL_ID else "canal no configurado"
+        embed = discord.Embed(
+            title=f"{text_emoji('EVIDENCE')} Evidencias",
+            description=f"**{get_pending_count()} pendientes** · {channel_text}",
+            color=COLOR_WARNING,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=EvidenceOperationsView(),
+            ephemeral=True,
+        )
+
+
+class EvidenceOperationsView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if can_review_member(interaction.user):
+            return True
+        await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+        return False
+
+    @discord.ui.button(
+        label="Scouteo",
+        emoji=button_emoji("SCOUT"),
+        style=discord.ButtonStyle.primary,
+    )
+    async def scouteo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ScouteoCountLaunchModal())
+
+    @discord.ui.button(
+        label="Mapeo",
+        emoji=button_emoji("MAP"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def mapping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await analizar_mapeo.callback(interaction, fuente="actual")
+
+    @discord.ui.button(
+        label="Cola",
+        emoji=button_emoji("PENDING"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title=f"{text_emoji('PENDING')} Evidencias Pendientes",
+            description=(
+                f"Pendientes: **{get_pending_count()}**\n"
+                f"Canal: <#{EVIDENCE_REVIEW_CHANNEL_ID}>"
+            ),
+            color=COLOR_WARNING,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class ScouteoCountLaunchModal(SafeModal):
+    message_id = discord.ui.TextInput(
+        label="ID del mensaje resumen",
+        placeholder="Clic derecho al resumen y Copiar ID",
+        max_length=20,
+    )
+    source = discord.ui.TextInput(
+        label="Destino",
+        placeholder="auto, actual o ultimo_cierre",
+        default="auto",
+        max_length=14,
+    )
+
+    def __init__(self):
+        super().__init__(title="Preparar conteo de scouteo")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        source = str(self.source.value or "auto").strip().lower()
+        if source not in {"auto", "actual", "ultimo_cierre"}:
+            await interaction.response.send_message(
+                "Destino invalido. Usa `auto`, `actual` o `ultimo_cierre`.",
+                ephemeral=True,
+            )
+            return
+        await conteo.callback(interaction, str(self.message_id.value), source)
+
+
+class HubScoutProfileButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Scout",
+            emoji=button_emoji("SCOUT"),
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('SCOUT')} Scout",
+                color=COLOR_PERFIL,
+            ),
+            view=ScoutProfilePickerView(),
+            ephemeral=True,
+        )
+
+
+class ScoutProfilePickerView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(ScoutProfilePicker())
+
+
+class ScoutProfilePicker(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Selecciona un scout",
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        user = self.values[0]
+        await interaction.response.edit_message(
+            embed=build_perfil_embed(str(user.id), user.display_name),
+            view=AdminProfileView(user),
+        )
+
+
+class HubBulkPointsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Puntos",
+            emoji=button_emoji("POINTS"),
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_bulk_points_dashboard_embed("actual"),
+            view=BulkPointsDashboardView("actual"),
+            ephemeral=True,
+        )
+
+
+class HubRosterButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Padrón",
+            emoji=button_emoji("AUDIT"),
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_alias_pattern_dashboard_embed(),
+            view=AliasPatternDashboardView(),
+            ephemeral=True,
+        )
+
+
+class HubPublishInfoButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Publicar",
+            emoji=button_emoji("EVIDENCE"),
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await publish_or_update_info_ranking()
+        record_interaction_audit(
+            interaction,
+            "publicaciones",
+            "actualizar_info_ranking",
+            target_type="canal",
+            target_id=INFO_RANKING_CHANNEL_ID,
+            summary="Actualizo la guia publica y el ranking general.",
+        )
+        await interaction.followup.send(
+            f"{text_emoji('APPROVED')} Guia publica y ranking general actualizados.",
+            ephemeral=True,
+        )
+
+
+def build_audit_dashboard_embed():
+    events = get_audit_events(limit=6)
+    embed = discord.Embed(
+        title=f"{text_emoji('AUDIT')} Historial",
+        description="Últimos 6 · historial completo en MD.",
+        color=COLOR_PANEL,
+    )
+    if not events:
+        embed.add_field(
+            name=f"{text_emoji('PENDING')} Sin movimientos",
+            value="El historial empezara a llenarse con las siguientes acciones.",
+            inline=False,
+        )
+        return embed
+
+    for event in events:
+        actor_id = str(event.get("actor_id") or "")
+        actor = f"<@{actor_id}>" if actor_id.isdigit() else (event.get("actor_name") or "Sistema")
+        timestamp = str(event.get("created_at") or "").replace("T", " ")[:16]
+        action = audit_action_label(event.get("action"))
+        summary = str(event.get("summary") or "Sin detalle")
+        embed.add_field(
+            name=f"#{event['id']} · {action}",
+            value=f"`{timestamp} UTC` · {actor} · {summary[:140]}",
+            inline=False,
+        )
+    return embed
+
+
+class HubAuditButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Historial",
+            emoji=button_emoji("AUDIT"),
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=build_audit_dashboard_embed(),
+            view=AuditDashboardView(),
+            ephemeral=True,
+        )
+
+
+class AuditDashboardView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_admin(interaction):
+            return True
+        await interaction.response.send_message("Requiere jerarquia Officer / Admin.", ephemeral=True)
+        return False
+
+    @discord.ui.button(
+        label="Actualizar",
+        emoji=button_emoji("AUDIT"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=build_audit_dashboard_embed(), view=self)
+
+    @discord.ui.button(
+        label="Exportar MD",
+        emoji=button_emoji("EXPORT"),
+        style=discord.ButtonStyle.primary,
+    )
+    async def export_markdown(self, interaction: discord.Interaction, button: discord.ui.Button):
+        record_interaction_audit(
+            interaction,
+            "exportaciones",
+            "historial_markdown",
+            target_type="auditoria",
+            summary="Descargo el historial completo de RankingBot en Markdown.",
+        )
+        events = get_audit_events(limit=None)
+        content = build_audit_markdown(events).encode("utf-8")
+        filename = f"historial_rankingbot_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.md"
+        await interaction.response.send_message(
+            content=f"{text_emoji('EXPORT')} Historial completo: **{len(events)} cambios**.",
+            file=discord.File(io.BytesIO(content), filename=filename),
+            ephemeral=True,
+        )
+
+
+class HubPriorityButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Prio",
+            emoji=button_emoji("PRIO"),
+            style=discord.ButtonStyle.primary,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        role = get_priority_role(interaction)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
+            return
+        cutoff = get_priority_min_points()
+        await interaction.response.send_message(
+            embed=build_priority_dashboard_embed(interaction.guild, role, cutoff, "actual"),
+            view=PrioDashboardView(cutoff, "actual"),
+            ephemeral=True,
+        )
+
+
+class HubSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Valores",
+            emoji=button_emoji("SETTINGS"),
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('SETTINGS')} Valores",
+                description="Puntos por unidad.",
+                color=COLOR_PANEL,
+            ),
+            view=PointsSelectView(),
+            ephemeral=True,
+        )
+
+
+class HubExportButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Exportar",
+            emoji=button_emoji("EXPORT"),
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('EXPORT')} Exportar",
+                description="Fuente y formato.",
+                color=COLOR_PANEL,
+            ),
+            view=RankingExportView(),
+            ephemeral=True,
+        )
+
+
+class RankingExportView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    async def send_file(self, interaction: discord.Interaction, source: str, file_format: str):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        source_data = get_ranking_export_source(source)
+        if source == "ultimo_cierre" and not source_data["snapshot"]:
+            await interaction.response.send_message("Aun no existe un cierre semanal.", ephemeral=True)
+            return
+        filename = build_ranking_export_filename(source_data, file_format)
+        file = (
+            build_ranking_csv_file(filename, source)
+            if file_format == "csv"
+            else build_ranking_xlsx_file(filename, source)
+        )
+        record_interaction_audit(
+            interaction,
+            "exportaciones",
+            "ranking",
+            target_type="archivo",
+            target_id=filename,
+            summary=f"Exporto {source_data['label']} en formato {file_format.upper()}.",
+            details={"fuente": source, "formato": file_format},
+        )
+        await interaction.response.send_message(
+            content=f"{text_emoji('EXPORT')} **{source_data['label']}**",
+            file=file,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Actual XLSX",
+        emoji=button_emoji("EXPORT"),
+        style=discord.ButtonStyle.primary,
+    )
+    async def current_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_file(interaction, "actual", "xlsx")
+
+    @discord.ui.button(
+        label="Actual CSV",
+        emoji=button_emoji("EXPORT"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def current_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_file(interaction, "actual", "csv")
+
+    @discord.ui.button(
+        label="Cierre XLSX",
+        emoji=button_emoji("CALENDAR"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def closure_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_file(interaction, "ultimo_cierre", "xlsx")
+
+    @discord.ui.button(
+        label="Cierre CSV",
+        emoji=button_emoji("CALENDAR"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def closure_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_file(interaction, "ultimo_cierre", "csv")
+
+
+class HubAfkButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="AFK",
+            emoji=button_emoji("AFK"),
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        await afks.callback(interaction)
+
+
+class HubClosureButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Cierre",
+            emoji=button_emoji("CALENDAR"),
+            style=discord.ButtonStyle.danger,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('CALENDAR')} Cierre",
+                description="Guarda el cierre y limpia el ranking. Confirma tras la auditoría.",
+                color=COLOR_ERROR,
+            ),
+            view=ResetView(),
+            ephemeral=True,
+        )
+
+
+class HubSystemButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Sistema",
+            emoji=button_emoji("SETTINGS"),
+            style=discord.ButtonStyle.secondary,
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('SETTINGS')} Sistema",
+                description="Paneles · conteos · checkpoint.",
+                color=COLOR_PANEL,
+            ),
+            view=LeaderSystemView(),
+            ephemeral=True,
+        )
+
+
+class LeaderSystemView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if is_gm_member(interaction.user):
+            return True
+        await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+        return False
+
+    @discord.ui.button(
+        label="Paneles",
+        emoji=button_emoji("APPROVED"),
+        style=discord.ButtonStyle.primary,
+    )
+    async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
+        record_interaction_audit(
+            interaction,
+            "publicaciones",
+            "actualizar_paneles",
+            target_type="servidor",
+            target_id=interaction.guild_id,
+            summary="Actualizo el dashboard publico y la guia del ranking.",
+        )
+        await interaction.followup.send("Paneles publicos actualizados.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Mover conteo",
+        emoji=button_emoji("CALENDAR"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def move_count(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MoveCountLaunchModal())
+
+    @discord.ui.button(
+        label="Checkpoint",
+        emoji=button_emoji("MAP"),
+        style=discord.ButtonStyle.danger,
+    )
+    async def reset_mapping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await reset_analisis_mapeo.callback(interaction)
+
+
+class MoveCountLaunchModal(SafeModal):
+    message_id = discord.ui.TextInput(
+        label="ID del mensaje/conteo",
+        placeholder="ID del resumen ya contado",
+        max_length=20,
+    )
+    closure_id = discord.ui.TextInput(
+        label="ID de cierre (opcional)",
+        placeholder="Vacio = ultimo cierre",
+        required=False,
+        max_length=10,
+    )
+
+    def __init__(self):
+        super().__init__(title="Mover conteo al cierre")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_closure = str(self.closure_id.value or "").strip()
+        if raw_closure and not raw_closure.isdigit():
+            await interaction.response.send_message("El ID de cierre debe ser numerico.", ephemeral=True)
+            return
+        await mover_conteo_cierre.callback(
+            interaction,
+            str(self.message_id.value),
+            int(raw_closure) if raw_closure else None,
+        )
 
 
 @admin_group.command(name="perfil", description="Muestra el perfil y puntos de cualquier scout")
@@ -2149,7 +3321,11 @@ class AdminProfileView(SafeView):
         self.user_id = str(usuario.id)
         self.display_name = usuario.display_name
 
-    @discord.ui.button(label="Sumar", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Sumar",
+        emoji=button_emoji("POINTS"),
+        style=discord.ButtonStyle.success,
+    )
     async def add_points(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -2160,7 +3336,11 @@ class AdminProfileView(SafeView):
             ephemeral=True,
         )
 
-    @discord.ui.button(label="Restar", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="Restar",
+        emoji=button_emoji("REJECTED"),
+        style=discord.ButtonStyle.danger,
+    )
     async def subtract_points(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -2171,7 +3351,11 @@ class AdminProfileView(SafeView):
             ephemeral=True,
         )
 
-    @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Actualizar",
+        emoji=button_emoji("AUDIT"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def refresh_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -2230,7 +3414,7 @@ class AdminProfilePointsModal(SafeModal):
         self.actividad_key = actividad_key
         meta = ACTIVIDADES[actividad_key]
         verb = "Sumar" if action == "sumar" else "Restar"
-        super().__init__(title=f"{verb} - {meta['label']}")
+        super().__init__(title=f"{verb} puntos · {meta['label']}")
 
     async def on_submit(self, interaction: discord.Interaction):
         if not is_admin(interaction):
@@ -2255,6 +3439,25 @@ class AdminProfilePointsModal(SafeModal):
             color = COLOR_ERROR
             sign = "-"
 
+        record_interaction_audit(
+            interaction,
+            "puntos",
+            self.action,
+            target_type="scout",
+            target_id=self.user_id,
+            summary=(
+                f"{self.action.title()} {units} unidad(es) de {ACTIVIDADES[self.actividad_key]['label']} "
+                f"({changed_points} pts) a {self.display_name}."
+            ),
+            details={
+                "actividad": self.actividad_key,
+                "unidades": units,
+                "puntos_solicitados": requested_points,
+                "puntos_aplicados": changed_points,
+                "motivo": str(self.motivo.value or ""),
+                "destino": "ranking_actual",
+            },
+        )
         await publish_or_update_dashboard()
         await publish_or_update_info_ranking()
         embed = build_admin_profile_adjustment_embed(
@@ -2285,7 +3488,7 @@ class SimpleProfileUser:
 def build_admin_profile_action_embed(user_id: str, display_name: str, action: str):
     verb = "sumar" if action == "sumar" else "restar"
     embed = discord.Embed(
-        title=f"Elegir actividad para {verb}",
+        title=f"{text_emoji('POINTS')} Elegir actividad para {verb}",
         description=f"Scout: <@{user_id}>\nElige la actividad que quieres {verb}.",
         color=COLOR_SUCCESS if action == "sumar" else COLOR_ERROR,
     )
@@ -2306,7 +3509,7 @@ def build_admin_profile_adjustment_embed(
 ):
     meta = ACTIVIDADES[actividad_key]
     embed = discord.Embed(
-        title="Perfil ajustado",
+        title=f"{text_emoji('APPROVED')} Puntos ajustados",
         description=(
             f"Scout: <@{user_id}>\n"
             f"{meta['emoji']} **{meta['label']}**\n"
@@ -2333,13 +3536,15 @@ def build_admin_profile_adjustment_embed(
 ])
 async def prio(
     interaction: discord.Interaction,
-    minimo: int = DEFAULT_PRIORITY_MIN_POINTS,
+    minimo: int | None = None,
     fuente: str = "actual",
 ):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
+    requested_minimum = minimo
+    minimo = get_priority_min_points() if minimo is None else minimo
     if minimo < 0:
         await interaction.response.send_message("El minimo no puede ser negativo.", ephemeral=True)
         return
@@ -2363,6 +3568,19 @@ async def prio(
         return
 
     await interaction.followup.send(embed=embed, view=PrioDashboardView(minimo, source), ephemeral=True)
+    if requested_minimum is not None:
+        previous = get_priority_min_points()
+        set_priority_min_points(minimo)
+        record_interaction_audit(
+            interaction,
+            "prio",
+            "cambiar_corte",
+            target_type="configuracion_prio",
+            summary=f"Cambio el corte de prio de {previous} a {minimo} puntos.",
+            details={"antes": previous, "despues": minimo, "fuente": source},
+        )
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
 
 
 @admin_group.command(name="info_ranking", description="Publica la guía y ranking general")
@@ -2372,6 +3590,14 @@ async def info_ranking(interaction: discord.Interaction):
         return
 
     await publish_or_update_info_ranking()
+    record_interaction_audit(
+        interaction,
+        "publicaciones",
+        "actualizar_info_ranking",
+        target_type="canal",
+        target_id=INFO_RANKING_CHANNEL_ID,
+        summary="Actualizo la guia publica y el ranking general.",
+    )
     await interaction.response.send_message("Info ranking actualizada.", ephemeral=True)
 
 
@@ -2383,7 +3609,11 @@ async def publish_or_update_info_ranking():
     embed = build_info_ranking_embed()
     info_msg = None
     async for msg in channel.history(limit=20):
-        if msg.author.id == bot.user.id and msg.embeds and "Ranking de Evidencias" in (msg.embeds[0].title or ""):
+        title = msg.embeds[0].title if msg.embeds else ""
+        if msg.author.id == bot.user.id and (
+            "Guía de Evidencias" in (title or "") or
+            "Ranking de Evidencias" in (title or "")
+        ):
             info_msg = msg
             break
 
@@ -2391,6 +3621,14 @@ async def publish_or_update_info_ranking():
         await info_msg.edit(embed=embed, view=InfoRankingView())
     else:
         await channel.send(embed=embed, view=InfoRankingView())
+
+
+async def refresh_public_messages_from_message(message: discord.Message):
+    try:
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
+    except discord.HTTPException as error:
+        print(f"[PUBLIC PANELS] No se pudieron actualizar tras evidencia {message.id}: {error}")
 
 
 @admin_group.command(name="modificar_puntos", description="Suma o resta actividades a un scout")
@@ -2446,6 +3684,23 @@ async def modificar_puntos(
         applied_quantity = cantidad
         source_label = "Ranking actual"
 
+    record_interaction_audit(
+        interaction,
+        "puntos",
+        "sumar" if cantidad > 0 else "restar",
+        target_type="scout",
+        target_id=usuario.id,
+        summary=(
+            f"{'Sumo' if cantidad > 0 else 'Resto'} {abs(applied_quantity)} unidad(es) de "
+            f"{ACTIVIDADES[actividad_key]['label']} ({pts} pts) a {usuario.display_name}."
+        ),
+        details={
+            "actividad": actividad_key,
+            "unidades": applied_quantity,
+            "puntos": pts,
+            "destino": source_label,
+        },
+    )
     meta = ACTIVIDADES[actividad_key]
     embed = discord.Embed(
         description=(
@@ -2490,7 +3745,7 @@ def build_bulk_points_dashboard_embed(source: str = "actual"):
     ]
     source_data = get_ranking_export_source(source)
     embed = discord.Embed(
-        title="Carga masiva de puntos",
+        title=f"{text_emoji('POINTS')} Ajuste Masivo de Puntos",
         description=(
             "Elige una actividad y pega nombres con `+`, menciones o IDs.\n"
             "Puedes ingresar la cantidad como `unidades` o como `puntos` finales.\n"
@@ -2611,7 +3866,7 @@ class BulkPointsModal(SafeModal):
         self.actividad_key = actividad_key
         self.source = normalize_priority_source(source)
         meta = ACTIVIDADES[actividad_key]
-        super().__init__(title=f"Carga masiva - {meta['label']}")
+        super().__init__(title=f"Ajuste masivo · {meta['label']}")
 
     async def on_submit(self, interaction: discord.Interaction):
         if not is_admin(interaction):
@@ -2683,6 +3938,26 @@ class BulkPointsModal(SafeModal):
                 applied_units = units
             applied.append((user_id, username, points, applied_units))
 
+        if applied:
+            record_interaction_audit(
+                interaction,
+                "puntos",
+                f"{action}_masivo",
+                target_type="grupo_scouts",
+                target_id=len(applied),
+                summary=(
+                    f"{action.title()} {units} unidad(es) de {ACTIVIDADES[self.actividad_key]['label']} "
+                    f"a {len(applied)} scout(s) en {self.source}."
+                ),
+                details={
+                    "actividad": self.actividad_key,
+                    "unidades_por_scout": units,
+                    "scouts": ", ".join(f"{username} ({user_id})" for user_id, username, *_ in applied),
+                    "destino": self.source,
+                    "motivo": str(self.motivo.value or ""),
+                    "no_resueltos": len(unresolved),
+                },
+            )
         if self.source == "actual":
             await publish_or_update_dashboard()
             await publish_or_update_info_ranking()
@@ -2718,7 +3993,11 @@ def build_bulk_points_result_embed(
     source_data = get_ranking_export_source(source)
     sign = "+" if action == "sumar" else "-"
     embed = discord.Embed(
-        title="Carga masiva aplicada" if applied else "Carga masiva sin aplicar",
+        title=(
+            f"{text_emoji('APPROVED')} Carga masiva aplicada"
+            if applied else
+            f"{text_emoji('PENDING')} Carga masiva sin aplicar"
+        ),
         description=(
             f"{meta['emoji']} **{meta['label']}**\n"
             f"Accion: **{action}**\n"
@@ -2775,7 +4054,7 @@ def build_alias_pattern_dashboard_embed():
     alias_rows = get_scout_aliases()
     scouts = get_all_scouts()
     embed = discord.Embed(
-        title="Panel de padron",
+        title=f"{text_emoji('AUDIT')} Padrón de Scouts",
         description=(
             "Administra nombres alternos de scouts desde una plantilla XLSX.\n"
             "La columna `aliases` acepta varios nombres separados por comas, espacios o saltos de linea."
@@ -2800,14 +4079,22 @@ class AliasPatternDashboardView(SafeView):
     def __init__(self):
         super().__init__(timeout=600)
 
-    @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Actualizar",
+        emoji=button_emoji("AUDIT"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.edit_message(embed=build_alias_pattern_dashboard_embed(), view=self)
 
-    @discord.ui.button(label="Exportar XLSX", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Exportar",
+        emoji=button_emoji("EXPORT"),
+        style=discord.ButtonStyle.primary,
+    )
     async def export_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -2817,8 +4104,20 @@ class AliasPatternDashboardView(SafeView):
             file=build_alias_pattern_xlsx_file(),
             ephemeral=True,
         )
+        record_interaction_audit(
+            interaction,
+            "exportaciones",
+            "padron_aliases",
+            target_type="archivo",
+            target_id="padron_aliases.xlsx",
+            summary="Exporto el padron de aliases en XLSX.",
+        )
 
-    @discord.ui.button(label="Importar XLSX", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Importar",
+        emoji=button_emoji("EVIDENCE"),
+        style=discord.ButtonStyle.success,
+    )
     async def import_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -2858,16 +4157,41 @@ class AliasPatternDashboardView(SafeView):
             await interaction.followup.send(f"No pude importar el XLSX: `{err}`", ephemeral=True)
             return
 
+        record_interaction_audit(
+            interaction,
+            "padron",
+            "importar_aliases",
+            target_type="archivo",
+            target_id=attachment.filename,
+            summary=(
+                f"Importo aliases: {len(result['saved'])} nuevos, "
+                f"{len(result['replaced'])} reasignados."
+            ),
+            details={
+                "guardados": len(result["saved"]),
+                "reasignados": len(result["replaced"]),
+                "sin_cambio": len(result["unchanged"]),
+                "no_resueltos": len(result["unresolved"]),
+            },
+        )
         await interaction.followup.send(embed=build_alias_import_result_embed(result), ephemeral=True)
 
-    @discord.ui.button(label="Agregar manual", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Agregar",
+        emoji=button_emoji("APPROVED"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def add_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_modal(AliasManualAddModal())
 
-    @discord.ui.button(label="Quitar alias", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="Quitar",
+        emoji=button_emoji("REJECTED"),
+        style=discord.ButtonStyle.danger,
+    )
     async def remove_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
@@ -2906,6 +4230,23 @@ class AliasManualAddModal(SafeModal):
         else:
             save_aliases_for_target(target, aliases, result)
 
+        if result["saved"] or result["replaced"]:
+            record_interaction_audit(
+                interaction,
+                "padron",
+                "agregar_aliases",
+                target_type="scout",
+                target_id=target["user_id"] if target else None,
+                summary=(
+                    f"Registro {len(result['saved']) + len(result['replaced'])} alias(es) "
+                    f"para {target['username'] if target else 'scout no resuelto'}."
+                ),
+                details={
+                    "guardados": len(result["saved"]),
+                    "reasignados": len(result["replaced"]),
+                    "aliases": ", ".join(item[2] for item in result["saved"] + result["replaced"]),
+                },
+            )
         await interaction.response.send_message(embed=build_alias_import_result_embed(result), ephemeral=True)
 
 
@@ -2934,13 +4275,27 @@ class AliasManualRemoveModal(SafeModal):
                 missing.append(alias)
 
         embed = discord.Embed(
-            title="Aliases quitados" if removed else "No encontre aliases",
+            title=(
+                f"{text_emoji('APPROVED')} Aliases quitados"
+                if removed else
+                f"{text_emoji('PENDING')} No encontre aliases"
+            ),
             color=COLOR_SUCCESS if removed else COLOR_WARNING,
         )
         if removed:
             embed.add_field(name="Quitados", value=", ".join(f"`+{alias}`" for alias in removed[:30])[:1000], inline=False)
         if missing:
             embed.add_field(name="No encontrados", value=", ".join(f"`+{alias}`" for alias in missing[:30])[:1000], inline=False)
+        if removed:
+            record_interaction_audit(
+                interaction,
+                "padron",
+                "quitar_aliases",
+                target_type="aliases",
+                target_id=len(removed),
+                summary=f"Quito {len(removed)} alias(es) del padron.",
+                details={"aliases": ", ".join(removed)},
+            )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -3168,7 +4523,7 @@ def save_aliases_for_target(target: dict, aliases: list[str], result: dict):
 def build_alias_import_result_embed(result: dict):
     total_saved = len(result["saved"]) + len(result["replaced"]) + len(result["unchanged"])
     embed = discord.Embed(
-        title="Importacion de padron",
+        title=f"{text_emoji('AUDIT')} Importación de Padrón",
         description=f"Aliases procesados: **{total_saved}**",
         color=COLOR_SUCCESS if total_saved and not result["unresolved"] else COLOR_WARNING,
     )
@@ -3214,8 +4569,8 @@ async def export_ranking(
     fuente: str = "ultimo_cierre",
     formato: str = "xlsx",
 ):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
     source = normalize_priority_source(fuente)
@@ -3230,8 +4585,17 @@ async def export_ranking(
         file = build_ranking_csv_file(filename, source)
     else:
         file = build_ranking_xlsx_file(filename, source)
+    record_interaction_audit(
+        interaction,
+        "exportaciones",
+        "ranking",
+        target_type="archivo",
+        target_id=filename,
+        summary=f"Exporto {source_data['label']} en formato {file_format.upper()}.",
+        details={"fuente": source, "formato": file_format},
+    )
     await interaction.response.send_message(
-        content=f"Export: **{source_data['label']}**",
+        content=f"{text_emoji('EXPORT')} Export: **{source_data['label']}**",
         file=file,
         ephemeral=True,
     )
@@ -3241,7 +4605,7 @@ def build_ranking_csv_file(filename: str, source: str = "actual"):
     source_data = get_ranking_export_source(source)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "nivel", "beneficio"])
+    writer.writerow(["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "estado_prio", "detalle_prio"])
 
     for row in get_ranking_export_rows(source_data):
         writer.writerow(row)
@@ -3255,7 +4619,7 @@ def build_ranking_xlsx_file(filename: str, source: str = "actual"):
     rows = [
         ["Fuente", source_data["label"]],
         [],
-        ["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "nivel", "beneficio"],
+        ["user_id", "username", *ACTIVIDADES.keys(), "total_puntos", "estado_prio", "detalle_prio"],
         *get_ranking_export_rows(source_data),
     ]
     return discord.File(fp=io.BytesIO(build_xlsx_bytes(rows)), filename=filename)
@@ -3291,11 +4655,13 @@ def get_ranking_export_rows(source_data: dict):
     exported = []
     for row in source_data["rows"]:
         if source_data["source"] == "ultimo_cierre":
-            exported.append(list(row))
-            continue
-        pts = calc_puntos_totales(row)
-        nivel, beneficio = get_nivel(pts)
-        exported.append([*row, pts, nivel, beneficio])
+            pts = int(row[7] or 0)
+            base = list(row[:8])
+        else:
+            pts = calc_puntos_totales(row)
+            base = [*row, pts]
+        _, estado, detalle = row_points_level(base, get_priority_min_points())
+        exported.append([*base, estado, detalle])
     exported.sort(key=lambda item: (-(int(item[7] or 0)), str(item[1]).lower()))
     return exported
 
@@ -3324,8 +4690,8 @@ def safe_export_date(value):
 
 @admin_group.command(name="afks", description="Revisa AFKs por 2 semanas")
 async def afks(interaction: discord.Interaction):
-    if not (is_admin(interaction) or is_gm_member(interaction.user)):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
     if not interaction.guild:
@@ -3445,7 +4811,7 @@ def build_inactive_review_embed(
     discarded_count: int = 0,
 ):
     embed = discord.Embed(
-        title="Revision AFK",
+        title=f"{text_emoji('AFK')} Revisión de Inactividad",
         description=(
             f"Criterio activo: **{max_points} pts o menos** en ranking actual y cierre anterior."
         ),
@@ -3523,15 +4889,16 @@ class InactiveReviewView(SafeView):
 class ChangeInactivePointsButton(discord.ui.Button):
     def __init__(self, review_view: InactiveReviewView):
         super().__init__(
-            label="Cambiar puntos",
+            label="Criterio",
+            emoji=button_emoji("POINTS"),
             style=discord.ButtonStyle.primary,
             row=0,
         )
         self.review_view = review_view
 
     async def callback(self, interaction: discord.Interaction):
-        if not (is_admin(interaction) or is_gm_member(interaction.user)):
-            await interaction.response.send_message("No tienes permiso para cambiar este reporte.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         await interaction.response.send_modal(InactivePointsModal(self.review_view))
 
@@ -3539,7 +4906,8 @@ class ChangeInactivePointsButton(discord.ui.Button):
 class KickInactiveButton(discord.ui.Button):
     def __init__(self, review_view: InactiveReviewView):
         super().__init__(
-            label="Kickear restantes",
+            label="Kick",
+            emoji=button_emoji("AFK"),
             style=discord.ButtonStyle.danger,
             row=0,
         )
@@ -3563,6 +4931,7 @@ class InactiveDiscardSelect(discord.ui.Select):
                 label=select_option_label(item, index),
                 value=str(item["user_id"]),
                 description=f"{item['two_week_points']} pts"[:100],
+                emoji=button_emoji("AFK"),
             )
             for index, item in enumerate(review_view.candidates[:INACTIVE_REPORT_LIMIT], start=1)
         ]
@@ -3575,8 +4944,8 @@ class InactiveDiscardSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if not (is_admin(interaction) or is_gm_member(interaction.user)):
-            await interaction.response.send_message("No tienes permiso para descartar candidatos.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         selected_ids = {str(user_id) for user_id in self.values}
         selected = [
@@ -3593,6 +4962,18 @@ class InactiveDiscardSelect(discord.ui.Select):
             for item in self.review_view.candidates
             if str(item["user_id"]) not in selected_ids
         ]
+        record_interaction_audit(
+            interaction,
+            "afk",
+            "descartar_candidatos",
+            target_type="revision_afk",
+            target_id=interaction.message.id if interaction.message else None,
+            summary=f"Descarto {len(selected)} candidato(s) de la revision AFK.",
+            details={
+                "candidatos": ", ".join(f"{item['username']} ({item['user_id']})" for item in selected),
+                "corte": self.review_view.max_points,
+            },
+        )
         self.review_view.discarded_count += len(selected)
         self.review_view.refresh_items()
         await interaction.response.edit_message(
@@ -3632,6 +5013,24 @@ class InactiveKickConfirmModal(SafeModal):
             list(self.review_view.candidates),
             self.review_view.max_points,
         )
+        record_interaction_audit(
+            interaction,
+            "afk",
+            "kickear_candidatos",
+            target_type="servidor",
+            target_id=interaction.guild.id,
+            summary=(
+                f"Kickeo {len(result['kicked'])} miembro(s) por inactividad; "
+                f"{len(result['errors'])} error(es)."
+            ),
+            details={
+                "corte": self.review_view.max_points,
+                "kickeados": ", ".join(f"{member.display_name} ({member.id})" for member in result["kicked"]),
+                "no_encontrados": len(result["missing"]),
+                "omitidos": len(result["skipped"]),
+                "errores": len(result["errors"]),
+            },
+        )
         kicked_ids = {str(member.id) for member in result["kicked"]}
         if kicked_ids:
             self.review_view.candidates = [
@@ -3652,13 +5051,13 @@ class InactivePointsModal(SafeModal):
     )
 
     def __init__(self, review_view: InactiveReviewView):
-        super().__init__(title="Cambiar puntos AFK")
+        super().__init__(title="Cambiar criterio AFK")
         self.review_view = review_view
         self.points.default = str(review_view.max_points)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not (is_admin(interaction) or is_gm_member(interaction.user)):
-            await interaction.response.send_message("No tienes permiso para cambiar este reporte.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         if not interaction.guild:
             await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
@@ -3671,12 +5070,26 @@ class InactivePointsModal(SafeModal):
             await interaction.response.send_message("Ingresa un numero valido mayor o igual a 0.", ephemeral=True)
             return
 
+        previous = self.review_view.max_points
         await interaction.response.defer(ephemeral=True, thinking=True)
         members = await get_non_bot_guild_members(interaction.guild)
         candidates, summary = build_inactive_candidates(members, max_points)
         self.review_view.candidates = candidates
         self.review_view.summary = summary
         self.review_view.max_points = max_points
+        record_interaction_audit(
+            interaction,
+            "afk",
+            "cambiar_criterio",
+            target_type="revision_afk",
+            target_id=interaction.message.id if interaction.message else None,
+            summary=f"Cambio el maximo semanal AFK de {previous} a {max_points} puntos.",
+            details={
+                "antes": previous,
+                "despues": max_points,
+                "candidatos": len(candidates),
+            },
+        )
         self.review_view.discarded_count = 0
         self.review_view.refresh_items()
         if interaction.message:
@@ -3746,7 +5159,7 @@ async def kick_inactive_candidates(
 
 def build_inactive_kick_result_embed(result: dict):
     embed = discord.Embed(
-        title="Miembros kickeados",
+        title=f"{text_emoji('AFK')} Resultado de Kicks AFK",
         color=COLOR_SUCCESS if result["kicked"] and not result["errors"] else COLOR_WARNING,
     )
     embed.add_field(name="Total", value=f"**{len(result['kicked'])}**", inline=True)
@@ -3913,26 +5326,30 @@ def get_priority_source(source: str | None = "actual"):
     }
 
 
-def row_points_level(row):
+def row_points_level(row, minimum: int | None = None):
     if len(row) >= 10:
-        return int(row[7] or 0), row[8], row[9]
-    points = calc_puntos_totales(row)
-    nivel, beneficio = get_nivel(points)
-    return points, nivel, beneficio
+        points = int(row[7] or 0)
+    else:
+        points = calc_puntos_totales(row)
+    cutoff = get_priority_min_points() if minimum is None else max(0, int(minimum))
+    qualifies = points >= cutoff
+    status = "Califica" if qualifies else "No califica"
+    detail = f"Cumple {cutoff}+ pts" if qualifies else f"Le faltan {cutoff - points} pts"
+    return points, status, detail
 
 
 def build_priority_candidates(minimo: int, ranking_rows=None):
     candidates = []
     for row in (ranking_rows if ranking_rows is not None else get_all_scouts()):
-        points, nivel, beneficio = row_points_level(row)
+        points, estado, detalle = row_points_level(row, minimo)
         if points < minimo:
             continue
         candidates.append({
             "user_id": str(row[0]),
             "username": row[1],
             "points": points,
-            "nivel": nivel,
-            "beneficio": beneficio,
+            "estado": estado,
+            "detalle": detalle,
         })
     candidates.sort(key=lambda item: item["points"], reverse=True)
     return candidates
@@ -3948,11 +5365,11 @@ def build_priority_decision_embed(
     protected_members = protected_members or []
     rows = build_priority_export_rows(minimo, protected_members, ranking_rows)
     preview = [
-        f"`#{index}` {format_priority_user(item)} - **{item['points']} pts** ({item['nivel']})"
+        f"`#{index}` {format_priority_user(item)} · **{item['points']} pts** · {item['motivo']}"
         for index, item in enumerate(rows[:15], start=1)
     ]
     embed = discord.Embed(
-        title="Decision semanal de prio",
+        title=f"{text_emoji('PRIO')} Revisión Semanal de Prio",
         description=(
             f"Corte: **{minimo} puntos o mas**\n"
             f"Fuente: **{source_label}**\n"
@@ -3964,7 +5381,7 @@ def build_priority_decision_embed(
         color=COLOR_RANKING,
     )
     embed.add_field(
-        name="Vista previa",
+        name=f"{text_emoji('AUDIT')} Vista previa",
         value="\n".join(preview) if preview else "Nadie alcanza el corte.",
         inline=False,
     )
@@ -4005,7 +5422,7 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
     ]
 
     embed = discord.Embed(
-        title="Panel semanal de prio",
+        title=f"{text_emoji('PRIO')} Gestión de Prio",
         description=(
             f"Rol: {role.mention}\n"
             f"Corte activo: **{minimo} puntos o mas**\n"
@@ -4072,15 +5489,15 @@ def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None, sou
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["fuente", source_data["label"]])
-    writer.writerow(["user_id", "username", "total_puntos", "nivel", "beneficio", "motivo"])
+    writer.writerow(["user_id", "username", "total_puntos", "estado_prio", "detalle", "motivo"])
     protected_members = get_priority_protected_members(guild) if guild else []
     for item in build_priority_export_rows(minimo, protected_members, source_data["rows"]):
         writer.writerow([
             item["user_id"],
             item["username"],
             item["points"],
-            item["nivel"],
-            item["beneficio"],
+            item["estado"],
+            item["detalle"],
             item["motivo"],
         ])
     output.seek(0)
@@ -4104,16 +5521,19 @@ def build_priority_export_rows(minimo: int, protected_members: list[discord.Memb
             continue
         scout = next((row for row in ranking_rows if str(row[0]) == user_id), None)
         if scout:
-            points, nivel, beneficio = row_points_level(scout)
+            points, estado, detalle = row_points_level(scout, minimo)
         else:
             points = 0
-            nivel, beneficio = get_nivel(0)
+            _, estado, detalle = row_points_level(
+                (user_id, member.display_name, 0, 0, 0, 0, 0),
+                minimo,
+            )
         rows.append({
             "user_id": user_id,
             "username": member.display_name,
             "points": points,
-            "nivel": nivel,
-            "beneficio": beneficio,
+            "estado": estado,
+            "detalle": detalle,
             "motivo": "staff_gm",
         })
         seen.add(user_id)
@@ -4214,7 +5634,7 @@ def format_priority_member_changes(members: list[discord.Member], empty_text: st
 
 def build_priority_apply_embed(minimo: int, role: discord.Role, result: dict):
     embed = discord.Embed(
-        title="Prio semanal sincronizada",
+        title=f"{text_emoji('PRIO')} Roles de Prio Actualizados",
         description=(
             f"Corte aplicado: **{minimo} puntos o mas**\n"
             f"Fuente: **{result.get('source_label', 'Ranking actual')}**\n"
@@ -4317,7 +5737,7 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict, pa
     start_index = page * PRIO_SCORE_PAGE_SIZE
     page_winners = winners[start_index:start_index + PRIO_SCORE_PAGE_SIZE]
     winner_lines = [
-        f"`#{start_index + index}` <@{item['user_id']}> - **{item['points']} pts** ({item['nivel']})"
+        f"`#{start_index + index}` <@{item['user_id']}> · **{item['points']} pts**"
         for index, item in enumerate(page_winners, start=1)
     ]
     base_description = (
@@ -4336,7 +5756,7 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict, pa
         score_title = "Puntaje"
     full_description = f"{base_description}\n\n**{score_title}**\n{score_text}"
     embed = discord.Embed(
-        title="Prio semanal",
+        title=f"{text_emoji('PRIO')} Ganadores de Prio",
         description=full_description if len(full_description) <= 4096 else base_description,
         color=COLOR_RANKING,
     )
@@ -4364,13 +5784,17 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict, pa
 class PrioDashboardView(SafeView):
     def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS, source: str = "actual"):
         super().__init__(timeout=600)
-        self.minimo = max(0, int(minimo or DEFAULT_PRIORITY_MIN_POINTS))
+        self.minimo = max(0, int(DEFAULT_PRIORITY_MIN_POINTS if minimo is None else minimo))
         self.source = normalize_priority_source(source)
 
-    @discord.ui.button(label="Actualizar", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Actualizar",
+        emoji=button_emoji("AUDIT"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         role = get_priority_role(interaction)
         if not role:
@@ -4381,17 +5805,25 @@ class PrioDashboardView(SafeView):
             view=self,
         )
 
-    @discord.ui.button(label="Cambiar corte", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Corte",
+        emoji=button_emoji("PRIO"),
+        style=discord.ButtonStyle.primary,
+    )
     async def change_cutoff(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         await interaction.response.send_modal(PrioCutoffModal(self.minimo, self.source))
 
-    @discord.ui.button(label="Exportar CSV", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="CSV",
+        emoji=button_emoji("EXPORT"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         if not interaction.guild:
             await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
@@ -4408,16 +5840,33 @@ class PrioDashboardView(SafeView):
             source_data["rows"],
         )
         file = build_priority_csv_file(self.minimo, interaction.guild, self.source)
+        record_interaction_audit(
+            interaction,
+            "exportaciones",
+            "prio_csv",
+            target_type="archivo",
+            target_id="prio_semanal.csv",
+            summary=f"Exporto la decision de prio con corte {self.minimo}.",
+            details={"fuente": self.source, "corte": self.minimo},
+        )
         await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
-    @discord.ui.button(label="Ver caps", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Requisito",
+        emoji=button_emoji("POINTS"),
+        style=discord.ButtonStyle.secondary,
+    )
     async def caps(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=build_priority_caps_embed(), ephemeral=True)
+        await interaction.response.send_message(embed=build_priority_requirement_embed(), ephemeral=True)
 
-    @discord.ui.button(label="Aplicar roles", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="Aplicar",
+        emoji=button_emoji("APPROVED"),
+        style=discord.ButtonStyle.danger,
+    )
     async def apply_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         await interaction.response.send_modal(PrioApplyConfirmModal(self.minimo, self.source))
 
@@ -4430,10 +5879,14 @@ class PriorityPostActionView(SafeView):
         self.role_id = int(role_id)
         self.result = result
 
-    @discord.ui.button(label="Postear ganadores", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Publicar",
+        emoji=button_emoji("PRIO"),
+        style=discord.ButtonStyle.success,
+    )
     async def preview_post(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         if not interaction.guild:
             await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
@@ -4555,16 +6008,21 @@ class PriorityPostConfirmView(SafeView):
 
     @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, custom_id="prio_preview_prev")
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         self.page -= 1
         await self.edit_page(interaction)
 
-    @discord.ui.button(label="Publicar ahora", style=discord.ButtonStyle.success, custom_id="prio_preview_publish")
+    @discord.ui.button(
+        label="Publicar",
+        emoji=button_emoji("PRIO"),
+        style=discord.ButtonStyle.success,
+        custom_id="prio_preview_publish",
+    )
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         if self.published:
             await interaction.response.send_message("Este post ya fue publicado desde este preview.", ephemeral=True)
@@ -4604,6 +6062,20 @@ class PriorityPostConfirmView(SafeView):
             await interaction.followup.send(f"No pude publicar el post de prio: `{err}`", ephemeral=True)
             return
 
+        record_interaction_audit(
+            interaction,
+            "prio",
+            "publicar_ganadores",
+            target_type="mensaje",
+            target_id=first_message.id,
+            summary=f"Publico {len(winners)} ganador(es) de prio con corte {self.minimo}.",
+            details={
+                "canal_id": channel.id,
+                "fuente": self.source,
+                "corte": self.minimo,
+                "ganadores": len(winners),
+            },
+        )
         self.published = True
         self.refresh_buttons()
         await interaction.edit_original_response(view=self)
@@ -4615,8 +6087,8 @@ class PriorityPostConfirmView(SafeView):
 
     @discord.ui.button(label="Siguiente", style=discord.ButtonStyle.secondary, custom_id="prio_preview_next")
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         self.page += 1
         await self.edit_page(interaction)
@@ -4631,8 +6103,8 @@ class PrioCutoffModal(SafeModal):
         self.value.default = str(current_minimo)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         try:
             minimo = int(str(self.value.value).strip())
@@ -4647,23 +6119,35 @@ class PrioCutoffModal(SafeModal):
             await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
             return
 
+        previous = get_priority_min_points()
+        minimo = set_priority_min_points(minimo)
+        record_interaction_audit(
+            interaction,
+            "prio",
+            "cambiar_corte",
+            target_type="configuracion_prio",
+            summary=f"Cambio el corte de prio de {previous} a {minimo} puntos.",
+            details={"antes": previous, "despues": minimo, "fuente": self.source},
+        )
         await interaction.response.edit_message(
             embed=build_priority_dashboard_embed(interaction.guild, role, minimo, self.source),
             view=PrioDashboardView(minimo, self.source),
         )
+        await publish_or_update_dashboard()
+        await publish_or_update_info_ranking()
 
 
 class PrioApplyConfirmModal(SafeModal):
     confirmation = discord.ui.TextInput(label="Confirmacion", placeholder="Escribe APLICAR", max_length=10)
 
     def __init__(self, minimo: int, source: str = "actual"):
-        super().__init__(title=f"Aplicar prio {minimo}+ pts")
+        super().__init__(title=f"Aplicar prio · {minimo}+ pts")
         self.minimo = minimo
         self.source = normalize_priority_source(source)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
-            await interaction.response.send_message("No tienes permiso.", ephemeral=True)
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         if str(self.confirmation.value).strip() != "APLICAR":
             await interaction.response.send_message("Operacion cancelada. Debes escribir `APLICAR`.", ephemeral=True)
@@ -4687,6 +6171,27 @@ class PrioApplyConfirmModal(SafeModal):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         result = await sync_priority_role(interaction.guild, role, self.minimo, self.source)
+        record_interaction_audit(
+            interaction,
+            "prio",
+            "aplicar_roles",
+            target_type="rol",
+            target_id=role.id,
+            summary=(
+                f"Aplico prio con corte {self.minimo}: "
+                f"{len(result['assigned'])} agregados, {len(result['removed'])} quitados."
+            ),
+            details={
+                "corte": self.minimo,
+                "fuente": self.source,
+                "agregados": len(result["assigned"]),
+                "quitados": len(result["removed"]),
+                "ya_tenian": len(result.get("already") or []),
+                "protegidos": len(result.get("kept_protected") or []),
+                "faltantes": len(result.get("missing") or []),
+                "errores": len(result.get("errors") or []),
+            },
+        )
         embed = build_priority_apply_embed(self.minimo, role, result)
         file = build_priority_csv_file(self.minimo, interaction.guild, self.source)
         await interaction.followup.send(
@@ -4717,8 +6222,8 @@ def archive_current_weekly_ranking(reason: str):
 
 @admin_group.command(name="reset_ranking", description="Resetea todos los puntos del ranking")
 async def reset_ranking(interaction: discord.Interaction, confirmacion: str):
-    if not is_admin(interaction):
-        await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
+    if not is_gm_member(interaction.user):
+        await interaction.response.send_message("Esta accion requiere jerarquia GM / Lider.", ephemeral=True)
         return
 
     if confirmacion != "RESET":
@@ -4728,6 +6233,19 @@ async def reset_ranking(interaction: discord.Interaction, confirmacion: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
     snapshot_id = archive_current_weekly_ranking("manual_reset")
     reset_all()
+    record_interaction_audit(
+        interaction,
+        "cierres",
+        "reset_manual",
+        target_type="cierre",
+        target_id=snapshot_id,
+        summary=(
+            f"Archivo el ranking en el cierre #{snapshot_id} y limpio el periodo actual."
+            if snapshot_id else
+            "Limpio el periodo actual; no habia puntos para archivar."
+        ),
+        details={"snapshot_id": snapshot_id},
+    )
     await publish_or_update_dashboard()
     await publish_or_update_info_ranking()
     snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else " No habia puntos para archivar."
@@ -4775,6 +6293,19 @@ async def weekly_reset_loop():
             snapshot_id = archive_current_weekly_ranking("weekly_reset")
             await send_weekly_ranking_export(snapshot_id)
             reset_all()
+            record_audit_event(
+                "cierres",
+                "reset_automatico",
+                actor_name="Sistema",
+                target_type="cierre",
+                target_id=str(snapshot_id) if snapshot_id else None,
+                summary=(
+                    f"Archivo el ranking en el cierre #{snapshot_id} y limpio el periodo automaticamente."
+                    if snapshot_id else
+                    "Limpio el periodo automaticamente; no habia puntos para archivar."
+                ),
+                details={"snapshot_id": snapshot_id},
+            )
             await publish_or_update_dashboard()
             await publish_or_update_info_ranking()
             snapshot_text = f" Cierre guardado: `#{snapshot_id}`." if snapshot_id else " No habia puntos para archivar."
