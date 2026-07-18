@@ -1,7 +1,7 @@
 # Emojis de RankingBot
 
-La carpeta `emojis/` contiene los 15 PNG transparentes subidos a Discord. Sus
-nombres e IDs coinciden con el catálogo de `emojis.py`.
+La carpeta `emojis/` contiene 24 PNG transparentes listos para Discord. Todos
+ya tienen su ID predeterminado configurado en el bot.
 
 Los IDs ya estan incluidos como valores predeterminados. Estas variables son
 opcionales y sirven para reemplazarlos en otro servidor:
@@ -22,6 +22,15 @@ EMOJI_RANKING_AFK_ID=
 EMOJI_RANKING_EXPORT_ID=
 EMOJI_RANKING_CALENDAR_ID=
 EMOJI_RANKING_SETTINGS_ID=
+EMOJI_RANKING_REFRESH_ID=
+EMOJI_RANKING_KILL_SCOUT_ID=
+EMOJI_RANKING_KILL_FIGHT_ID=
+EMOJI_RANKING_CLEANUP_ID=
+EMOJI_RANKING_SCOUTING_ID=
+EMOJI_RANKING_ROSTER_ID=
+EMOJI_RANKING_PUBLISH_ID=
+EMOJI_RANKING_PANELS_ID=
+EMOJI_RANKING_IMPORT_ID=
 ```
 
 Si algún ID está vacío, el bot conserva automáticamente su emoji Unicode de
@@ -33,3 +42,4 @@ respaldo.
 - `ranking-dashboards-preview.png`: dashboards General, Officer/Admin y GM/Lider.
 - `ranking-review-preview.png`: revision de evidencia y multiplicador individual.
 - `ranking-audit-preview.png`: historial de cambios y descarga completa en Markdown.
+- `ranking-buttons-preview.png`: actividades y acciones sin emojis ambiguos.

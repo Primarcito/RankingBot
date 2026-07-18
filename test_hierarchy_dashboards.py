@@ -94,6 +94,31 @@ class HierarchyDashboardTests(unittest.TestCase):
             ["Actual XLSX", "Actual CSV", "Cierre XLSX", "Cierre CSV"],
         )
 
+    def test_only_summary_commands_are_registered(self):
+        self.assertEqual(
+            sorted(command.name for command in main.tree.get_commands()),
+            ["ranking"],
+        )
+        self.assertEqual(
+            sorted(command.name for command in main.admin_group.commands),
+            [
+                "afks",
+                "analizar_mapeo",
+                "conteo",
+                "dashboard_scouts",
+                "export_ranking",
+                "info_ranking",
+                "modificar_puntos",
+                "mover_conteo_cierre",
+                "padron",
+                "perfil",
+                "prio",
+                "puntos",
+                "reset_analisis",
+                "reset_ranking",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

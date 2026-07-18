@@ -36,13 +36,22 @@ DEFINITIONS = {
     "EXPORT": EmojiDefinition("ranking_exportar", "📦", 1527938726116855890),
     "CALENDAR": EmojiDefinition("ranking_cierre", "📅", 1527938720312066139),
     "SETTINGS": EmojiDefinition("ranking_config", "⚙️", 1527938722275004516),
+    "REFRESH": EmojiDefinition("ranking_actualizar", "🔄", 1527966050287616040),
+    "KILL_SCOUT": EmojiDefinition("ranking_kill_scout", "🎯", 1527966066154668113),
+    "KILL_FIGHT": EmojiDefinition("ranking_kill_pelea", "⚔️", 1527966064171024424),
+    "CLEANUP": EmojiDefinition("ranking_limpieza", "🧹", 1527966070353301585),
+    "SCOUTING": EmojiDefinition("ranking_scouteo", "🔭", 1527966086925123685),
+    "ROSTER": EmojiDefinition("ranking_personas", "👥", 1527966077567500358),
+    "PUBLISH": EmojiDefinition("ranking_publicar", "📣", 1527966080545460264),
+    "PANELS": EmojiDefinition("ranking_paneles", "🗂️", 1527966074581287002),
+    "IMPORT": EmojiDefinition("ranking_importar", "📥", 1527966062157631579),
 }
 
 ACTIVITY_EMOJI_KEYS = {
-    "kill_scout": "SCOUT",
-    "kill_pelea": "RANKING",
-    "limpieza_aspecto": "AUDIT",
-    "scouteo": "SCOUT",
+    "kill_scout": "KILL_SCOUT",
+    "kill_pelea": "KILL_FIGHT",
+    "limpieza_aspecto": "CLEANUP",
+    "scouteo": "SCOUTING",
     "mapeo": "MAP",
 }
 

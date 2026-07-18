@@ -7,7 +7,7 @@ from collections import deque
 from PIL import Image, ImageDraw
 
 
-NAMES = [
+ATLAS_NAMES = [
     "ranking_trofeo",
     "ranking_puntos",
     "ranking_scout",
@@ -24,6 +24,20 @@ NAMES = [
     "ranking_cierre",
     "ranking_config",
 ]
+
+EXTRA_NAMES = [
+    "ranking_actualizar",
+    "ranking_kill_scout",
+    "ranking_kill_pelea",
+    "ranking_limpieza",
+    "ranking_scouteo",
+    "ranking_personas",
+    "ranking_publicar",
+    "ranking_paneles",
+    "ranking_importar",
+]
+
+ALL_NAMES = ATLAS_NAMES + EXTRA_NAMES
 
 
 def chroma_to_alpha(image: Image.Image) -> Image.Image:
@@ -79,8 +93,13 @@ def keep_largest_component(image: Image.Image) -> Image.Image:
     return output
 
 
-def square_icon(image: Image.Image, size: int = 128) -> Image.Image:
-    image = keep_largest_component(image)
+def square_icon(
+    image: Image.Image,
+    size: int = 128,
+    keep_only_largest: bool = True,
+) -> Image.Image:
+    if keep_only_largest:
+        image = keep_largest_component(image)
     alpha = image.getchannel("A")
     bbox = alpha.getbbox()
     if not bbox:
@@ -99,12 +118,14 @@ def square_icon(image: Image.Image, size: int = 128) -> Image.Image:
 def build_preview(icons: list[Image.Image], destination: Path):
     cell = 176
     gap = 12
-    width = (cell * 5) + (gap * 6)
-    height = (cell * 3) + (gap * 4)
+    columns = 5
+    rows = max(1, (len(icons) + columns - 1) // columns)
+    width = (cell * columns) + (gap * (columns + 1))
+    height = (cell * rows) + (gap * (rows + 1))
     preview = Image.new("RGBA", (width, height), (13, 17, 23, 255))
     draw = ImageDraw.Draw(preview)
     for index, icon in enumerate(icons):
-        row, column = divmod(index, 5)
+        row, column = divmod(index, columns)
         x = gap + column * (cell + gap)
         y = gap + row * (cell + gap)
         draw.rounded_rectangle(
@@ -129,8 +150,7 @@ def main():
     destination.mkdir(parents=True, exist_ok=True)
 
     atlas = Image.open(source).convert("RGB")
-    icons = []
-    for index, name in enumerate(NAMES):
+    for index, name in enumerate(ATLAS_NAMES):
         row, column = divmod(index, 5)
         left = round(column * atlas.width / 5)
         right = round((column + 1) * atlas.width / 5)
@@ -138,11 +158,15 @@ def main():
         bottom = round((row + 1) * atlas.height / 3)
         icon = square_icon(chroma_to_alpha(atlas.crop((left, top, right, bottom))))
         icon.save(destination / f"{name}.png", optimize=True)
-        icons.append(icon)
 
+    icons = [
+        Image.open(destination / f"{name}.png").convert("RGBA")
+        for name in ALL_NAMES
+        if (destination / f"{name}.png").exists()
+    ]
     preview = destination.parent / "ranking-emojis-preview.png"
     build_preview(icons, preview)
-    print(f"{len(icons)} emojis creados en {destination}")
+    print(f"{len(icons)} emojis incluidos en {destination}")
     print(f"Preview: {preview}")
 
 

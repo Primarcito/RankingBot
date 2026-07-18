@@ -2419,7 +2419,6 @@ async def publish_or_update_dashboard():
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-@tree.command(name="mi_ranking", description="Muestra tu perfil y puntos de scout")
 async def mi_ranking(interaction: discord.Interaction):
     embed = build_perfil_embed(str(interaction.user.id), interaction.user.display_name)
     await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -2765,7 +2764,7 @@ class EvidenceOperationsView(SafeView):
 
     @discord.ui.button(
         label="Scouteo",
-        emoji=button_emoji("SCOUT"),
+        emoji=button_emoji("SCOUTING"),
         style=discord.ButtonStyle.primary,
     )
     async def scouteo(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2892,7 +2891,7 @@ class HubRosterButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             label="Padrón",
-            emoji=button_emoji("AUDIT"),
+            emoji=button_emoji("ROSTER"),
             style=discord.ButtonStyle.secondary,
             row=1,
         )
@@ -2912,7 +2911,7 @@ class HubPublishInfoButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             label="Publicar",
-            emoji=button_emoji("EVIDENCE"),
+            emoji=button_emoji("PUBLISH"),
             style=discord.ButtonStyle.secondary,
             row=1,
         )
@@ -2998,7 +2997,7 @@ class AuditDashboardView(SafeView):
 
     @discord.ui.button(
         label="Actualizar",
-        emoji=button_emoji("AUDIT"),
+        emoji=button_emoji("REFRESH"),
         style=discord.ButtonStyle.secondary,
     )
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3056,7 +3055,7 @@ class HubSettingsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
             label="Valores",
-            emoji=button_emoji("SETTINGS"),
+            emoji=button_emoji("POINTS"),
             style=discord.ButtonStyle.secondary,
             row=2,
         )
@@ -3067,7 +3066,7 @@ class HubSettingsButton(discord.ui.Button):
             return
         await interaction.response.send_message(
             embed=discord.Embed(
-                title=f"{text_emoji('SETTINGS')} Valores",
+                title=f"{text_emoji('POINTS')} Valores",
                 description="Puntos por unidad.",
                 color=COLOR_PANEL,
             ),
@@ -3242,7 +3241,7 @@ class LeaderSystemView(SafeView):
 
     @discord.ui.button(
         label="Paneles",
-        emoji=button_emoji("APPROVED"),
+        emoji=button_emoji("PANELS"),
         style=discord.ButtonStyle.primary,
     )
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3353,7 +3352,7 @@ class AdminProfileView(SafeView):
 
     @discord.ui.button(
         label="Actualizar",
-        emoji=button_emoji("AUDIT"),
+        emoji=button_emoji("REFRESH"),
         style=discord.ButtonStyle.secondary,
     )
     async def refresh_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4054,7 +4053,7 @@ def build_alias_pattern_dashboard_embed():
     alias_rows = get_scout_aliases()
     scouts = get_all_scouts()
     embed = discord.Embed(
-        title=f"{text_emoji('AUDIT')} Padrón de Scouts",
+        title=f"{text_emoji('ROSTER')} Padrón de Scouts",
         description=(
             "Administra nombres alternos de scouts desde una plantilla XLSX.\n"
             "La columna `aliases` acepta varios nombres separados por comas, espacios o saltos de linea."
@@ -4081,7 +4080,7 @@ class AliasPatternDashboardView(SafeView):
 
     @discord.ui.button(
         label="Actualizar",
-        emoji=button_emoji("AUDIT"),
+        emoji=button_emoji("REFRESH"),
         style=discord.ButtonStyle.secondary,
     )
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4115,7 +4114,7 @@ class AliasPatternDashboardView(SafeView):
 
     @discord.ui.button(
         label="Importar",
-        emoji=button_emoji("EVIDENCE"),
+        emoji=button_emoji("IMPORT"),
         style=discord.ButtonStyle.success,
     )
     async def import_xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4523,7 +4522,7 @@ def save_aliases_for_target(target: dict, aliases: list[str], result: dict):
 def build_alias_import_result_embed(result: dict):
     total_saved = len(result["saved"]) + len(result["replaced"]) + len(result["unchanged"])
     embed = discord.Embed(
-        title=f"{text_emoji('AUDIT')} Importación de Padrón",
+        title=f"{text_emoji('IMPORT')} Importación de Padrón",
         description=f"Aliases procesados: **{total_saved}**",
         color=COLOR_SUCCESS if total_saved and not result["unresolved"] else COLOR_WARNING,
     )
@@ -5789,7 +5788,7 @@ class PrioDashboardView(SafeView):
 
     @discord.ui.button(
         label="Actualizar",
-        emoji=button_emoji("AUDIT"),
+        emoji=button_emoji("REFRESH"),
         style=discord.ButtonStyle.secondary,
     )
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -6344,7 +6343,9 @@ def current_weekly_ranking_start():
     return target
 
 
-tree.add_command(admin_group)
+# Los flujos de admin conservan sus callbacks y validaciones, pero no se
+# registran como slash commands separados. /ranking los expone por jerarquia
+# mediante dashboards, igual que MapasBot.
 
 
 if __name__ == "__main__":

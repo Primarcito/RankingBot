@@ -219,7 +219,7 @@ def build_review():
     draw.text((80, 564), "@Officer cambio a @Violeth → x0.95 (29 pts)", font=font(19), fill=(188, 190, 194))
 
     draw_compact_button(canvas, draw, 80, 645, 110, "Texto", "ranking_evidencia", "secondary")
-    draw_compact_button(canvas, draw, 200, 645, 130, "Personas", "ranking_scout", "secondary")
+    draw_compact_button(canvas, draw, 200, 645, 130, "Personas", "ranking_personas", "secondary")
     draw_compact_button(canvas, draw, 340, 645, 155, "Multiplicador", "ranking_multiplicador", "secondary")
     draw_compact_button(canvas, draw, 505, 645, 145, "Aprobar", "ranking_aprobado", "success")
     draw_compact_button(canvas, draw, 660, 645, 145, "Rechazar", "ranking_rechazado", "danger")
@@ -270,7 +270,7 @@ def build_audit_history():
         draw.line((82, y + 50, 840, y + 50), fill=(70, 72, 78), width=1)
         y += 59
 
-    draw_button(canvas, draw, 82, 650, 170, "Actualizar", "ranking_auditoria", "secondary")
+    draw_button(canvas, draw, 82, 650, 170, "Actualizar", "ranking_actualizar", "secondary")
     draw_button(canvas, draw, 266, 650, 210, "Exportar MD", "ranking_exportar", "primary")
 
     rounded(draw, (915, 135, 1390, 720), (36, 37, 41), (70, 72, 78), radius=18, width=2)
@@ -306,9 +306,50 @@ def build_audit_history():
     canvas.convert("RGB").save(OUTPUT_DIR / "ranking-audit-preview.png", quality=95)
 
 
+def build_button_semantics():
+    canvas = Image.new("RGBA", (1480, 430), (30, 31, 34, 255))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((48, 34), "RankingBot · botones con identidad propia", font=font(34, True), fill=(245, 246, 247))
+    draw.text(
+        (49, 80),
+        "Cada actividad tiene su símbolo; las repeticiones quedan solo para acciones iguales.",
+        font=font(20),
+        fill=(166, 168, 173),
+    )
+
+    draw.text((50, 145), "ACTIVIDADES", font=font(17, True), fill=(219, 222, 225))
+    activity_buttons = [
+        ("Kill Scout", "ranking_kill_scout", "secondary", 210),
+        ("Kill Pelea", "ranking_kill_pelea", "primary", 210),
+        ("Limpieza Aspecto", "ranking_limpieza", "secondary", 250),
+        ("Scouteo", "ranking_scouteo", "secondary", 190),
+        ("Mapeo", "ranking_mapeo", "secondary", 180),
+    ]
+    x = 50
+    for label, emoji, style, width in activity_buttons:
+        draw_button(canvas, draw, x, 180, width, label, emoji, style)
+        x += width + 12
+
+    draw.text((50, 275), "ACCIONES", font=font(17, True), fill=(219, 222, 225))
+    action_buttons = [
+        ("Actualizar", "ranking_actualizar", "secondary", 205),
+        ("Personas", "ranking_personas", "secondary", 190),
+        ("Publicar", "ranking_publicar", "primary", 185),
+        ("Paneles", "ranking_paneles", "secondary", 185),
+        ("Importar", "ranking_importar", "success", 185),
+    ]
+    x = 50
+    for label, emoji, style, width in action_buttons:
+        draw_button(canvas, draw, x, 310, width, label, emoji, style)
+        x += width + 12
+
+    canvas.convert("RGB").save(OUTPUT_DIR / "ranking-buttons-preview.png", quality=95)
+
+
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     build_dashboards()
     build_review()
     build_audit_history()
+    build_button_semantics()
     print("Previews creados en assets/discord")

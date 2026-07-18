@@ -640,7 +640,7 @@ class EvidenceAddParticipantsButton(discord.ui.Button):
     def __init__(self, evidence_message_id: str, review_message: discord.Message | None = None):
         super().__init__(
             label="Personas",
-            emoji=button_emoji("SCOUT"),
+            emoji=button_emoji("ROSTER"),
             style=discord.ButtonStyle.secondary,
             custom_id=f"evidence_add_people:{evidence_message_id}"
         )
@@ -653,7 +653,7 @@ class EvidenceAddParticipantsButton(discord.ui.Button):
             return
 
         embed = discord.Embed(
-            title=f"{text_emoji('SCOUT')} Agregar participantes",
+            title=f"{text_emoji('ROSTER')} Agregar participantes",
             description="Selecciona los usuarios que tambien reciben esta evidencia.",
             color=COLOR_PANEL
         )
@@ -1226,7 +1226,7 @@ def upsert_embed_field(embed: discord.Embed, name: str, value: str):
 
 def build_participant_resolution_embed(added, suggestions: list[dict], unresolved: list[str]):
     embed = discord.Embed(
-        title=f"{text_emoji('AUDIT')} Resolución de Participantes",
+        title=f"{text_emoji('ROSTER')} Resolución de Participantes",
         color=COLOR_PANEL,
     )
     if added:

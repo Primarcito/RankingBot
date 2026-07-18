@@ -33,8 +33,9 @@ Este chequeo solo compila codigo y busca nombres faltantes en `main.py`; no abre
 ## Comandos
 
 `/ranking` es la entrada principal. Detecta la jerarquia del usuario y abre uno
-de tres dashboards con botones, selectores y formularios. Los comandos de
-`/admin` se mantienen como respaldo.
+de tres dashboards con botones, selectores y formularios. Discord solo
+registra `/ranking`; las funciones generales y administrativas permanecen
+detrás de los botones y conservan sus permisos.
 
 Los accesos se agrupan para mantener el panel compacto: **Operaciones** reúne
 evidencias, scout, puntos, padrón y publicaciones; **Admin** reúne prio,
@@ -48,33 +49,31 @@ completa en Markdown (`.md`).
 | Officer / Admin | **Evidencias y Puntos**: pendientes y últimas 3 evidencias |
 | GM / Lider | **Prio y Cierre**: clasificados, ranking actual, último cierre y próximo reset |
 
-| Comando | Descripción | Jerarquia |
+| Ruta en `/ranking` | Función | Jerarquia |
 |---|---|---|
-| `/ranking` | Abre el dashboard correspondiente | General |
-| `/mi_ranking` | Tu perfil y puntos | Todos |
-| `/admin perfil usuario` | Perfil y puntos de cualquier scout | Officer / Admin |
-| `/admin conteo` | Calcula scouteo desde resumen diario y permite elegir ranking/cierre | Officer / Admin |
-| `/admin analizar_mapeo` | Analiza logs de mapeo semanal | Officer / Admin |
-| `/admin puntos fuente` | Panel para sumar o restar puntos auditados | Officer / Admin |
-| `/admin modificar_puntos fuente` | Ajusta actividades de un scout | Officer / Admin |
-| `/admin padron` | Administra aliases y alts | Officer / Admin |
-| `/admin info_ranking` | Publica la guia y ranking general | Officer / Admin |
-| `/admin mover_conteo_cierre` | Mueve un conteo aprobado al cierre semanal | GM / Lider |
-| `/admin reset_analisis` | Reinicia el checkpoint de mapeo | GM / Lider |
-| `/admin dashboard_scouts` | Publica o actualiza el dashboard | GM / Lider |
-| `/admin prio minimo fuente` | Revisa y sincroniza el rol prio | GM / Lider |
-| `/admin afks` | Audita AFKs de dos semanas y permite kickear | GM / Lider |
-| `/admin export_ranking fuente formato` | Exporta Excel o CSV | GM / Lider |
-| `/admin reset_ranking` | Cierra y resetea el ranking | GM / Lider |
+| **Perfil** | Tu perfil y puntos | General |
+| **Operaciones > Scout** | Perfil y ajustes individuales | Officer / Admin |
+| **Operaciones > Evidencias > Scouteo** | Conteo auditado de resumen diario | Officer / Admin |
+| **Operaciones > Evidencias > Mapeo** | Análisis semanal de logs | Officer / Admin |
+| **Operaciones > Puntos** | Ajustes grupales auditados | Officer / Admin |
+| **Operaciones > Padrón** | Aliases y alts | Officer / Admin |
+| **Operaciones > Publicar** | Guía y ranking público | Officer / Admin |
+| **Admin > Prio** | Corte, CSV y sincronización de rol | GM / Lider |
+| **Admin > AFK** | Auditoría de inactividad y kicks | GM / Lider |
+| **Admin > Exportar** | Ranking actual o cierre en XLSX/CSV | GM / Lider |
+| **Admin > Cierre** | Guarda el cierre y limpia el ranking | GM / Lider |
+| **Admin > Sistema > Mover conteo** | Corrige el cierre de un conteo | GM / Lider |
+| **Admin > Sistema > Checkpoint** | Reinicia el análisis de mapeo | GM / Lider |
+| **Admin > Sistema > Paneles** | Actualiza los paneles públicos | GM / Lider |
 
 ## Cierres semanales
 
-Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar `/admin prio fuente:ultimo_cierre` para dar/quitar el rol prio aunque el ranking nuevo ya este limpio.
+Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar **Admin > Prio** con la fuente del último cierre para dar o quitar el rol aunque el ranking nuevo ya esté limpio.
 
-Si `/admin conteo` se ejecuta despues del reset pero el resumen diario trae una fecha de la semana cerrada, la revision queda apuntando a ese cierre semanal. Al aprobarla suma esos puntos al cierre archivado, no al ranking nuevo.
+Si **Operaciones > Evidencias > Scouteo** se usa después del reset pero el resumen diario trae una fecha de la semana cerrada, la revisión queda apuntando a ese cierre semanal. Al aprobarla suma esos puntos al cierre archivado, no al ranking nuevo.
 
-Para descargar la semana pasada usa `/admin export_ranking fuente:Ultimo cierre semanal formato:Excel (.xlsx)`.
-Para corregir esa semana usa `/admin modificar_puntos fuente:Ultimo cierre semanal` o `/admin puntos fuente:Ultimo cierre semanal`; las restas no bajan una actividad por debajo de 0.
+Para descargar la semana pasada usa **Admin > Exportar > Cierre XLSX/CSV**.
+Para corregir esa semana usa **Operaciones > Scout** o **Operaciones > Puntos** con la fuente del último cierre; las restas no bajan una actividad por debajo de 0.
 
 ## Conteo acumulado de scouteo
 
@@ -97,10 +96,10 @@ y cuantos puntos faltan.
 
 ## Emojis
 
-Los PNG estan en `assets/discord/emojis/` y sus IDs de Discord ya quedaron
-registrados en `emojis.py`. RankingBot los aplica a dashboards, mensajes,
-botones y reacciones. Las variables de `.env` permiten reemplazar cualquier ID
-sin tocar el codigo; el emoji Unicode queda como respaldo.
+Los 24 PNG están en `assets/discord/emojis/` y sus IDs de Discord ya vienen
+configurados. El catálogo de `emojis.py` los aplica a dashboards, mensajes,
+botones y reacciones sin reutilizar símbolos para conceptos distintos. Si se
+usa el bot en otro servidor, cada ID puede reemplazarse desde el entorno.
 
 ## Historial
 
