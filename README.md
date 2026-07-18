@@ -84,6 +84,12 @@ Los paneles públicos se refrescan al crear, aprobar o rechazar una evidencia,
 al cambiar valores y después de cada cierre. La auditoría manual sigue siendo
 obligatoria: detectar o contar una evidencia nunca entrega puntos por sí solo.
 
+## Conteo de mapeo
+
+Cada ruta solo aporta una vez. La primera aparición cuenta como `Uniq`; las
+repeticiones quedan visibles en `Dup` para auditoría, pero suman exactamente
+`0` al peso, las unidades y los puntos.
+
 ## Prio
 
 RankingBot no usa niveles S/A/B/C. Solo existe un numero configurable de

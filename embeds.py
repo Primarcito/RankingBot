@@ -17,19 +17,15 @@ from emojis import text_emoji
 
 
 def _medal(pos: int) -> str:
-    return {1: "🥇", 2: "🥈", 3: "🥉"}.get(pos, f"`#{pos}`")
+    medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(pos)
+    return f"{medal} **{pos}.**" if medal else f"**{pos}.**"
 
 
-def _prio_badge(points: int) -> str:
-    status = get_prio_status(points)
-    return text_emoji("PRIO") if status["qualifies"] else "▫️"
-
-
-def _bar(value: int, max_value: int, length: int = 8) -> str:
-    if max_value <= 0:
-        return "░" * length
-    filled = max(0, min(round((value / max_value) * length), length))
-    return "█" * filled + "░" * (length - filled)
+def _prio_badge(points: int, cutoff: int) -> str:
+    status = get_prio_status(points, cutoff)
+    if status["qualifies"]:
+        return f"{text_emoji('PRIO')} **Prio**"
+    return f"Faltan **{status['missing']} pts**"
 
 
 def get_ranked_scouts():
@@ -73,12 +69,11 @@ def build_dashboard_embed() -> discord.Embed:
     )
 
     if ranked:
-        top_points = ranked[0][1] or 1
         ranking = []
         for pos, (row, points) in enumerate(ranked[:10], start=1):
             ranking.append(
-                f"{_medal(pos)} **{row[1]}** · {_prio_badge(points)} "
-                f"`{_bar(points, top_points)}` **{points} pts**"
+                f"{_medal(pos)} **{row[1]}** · **{points} pts** · "
+                f"{_prio_badge(points, cutoff)}"
             )
         embed.add_field(
             name=f"{text_emoji('RANKING')} Top 10",
@@ -107,7 +102,7 @@ def build_ranking_embed(limit: int = 15, page: int = 0, per_page: int | None = N
         ranked = ranked_all[start:start + per_page]
         start_pos = start + 1
         total_pages = max(1, (len(ranked_all) + per_page - 1) // per_page)
-        page_text = f"Pagina {page + 1}/{total_pages}"
+        page_text = f"Página {page + 1}/{total_pages}"
 
     cutoff = get_priority_min_points()
     embed = discord.Embed(
@@ -118,20 +113,17 @@ def build_ranking_embed(limit: int = 15, page: int = 0, per_page: int | None = N
     if not ranked:
         embed.description = "Aun no hay puntos registrados."
         if page_text:
-            embed.set_footer(text=f"{page_text} · Total scouts: {len(scouts)}")
+            embed.set_footer(text=f"{page_text} · Prio: {cutoff} pts · {len(scouts)} scouts")
         return embed
 
-    top_points = ranked_all[0][1] or 1
     lines = []
     for pos, (row, points) in enumerate(ranked, start=start_pos):
-        status = get_prio_status(points, cutoff)
-        prio_text = f"{text_emoji('PRIO')} prio" if status["qualifies"] else f"faltan {status['missing']}"
         lines.append(
-            f"{_medal(pos)} **{row[1]}** · **{points} pts** · {prio_text}\n"
-            f"`{_bar(points, top_points, 10)}`"
+            f"{_medal(pos)} **{row[1]}** · **{points} pts** · "
+            f"{_prio_badge(points, cutoff)}"
         )
     embed.description = "\n".join(lines)
-    footer = f"Corte prio: {cutoff} pts · Total scouts: {len(scouts)}"
+    footer = f"Prio: {cutoff} pts · {len(scouts)} scouts"
     if page_text:
         footer = f"{page_text} · {footer}"
     embed.set_footer(text=footer)

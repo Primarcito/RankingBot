@@ -10,7 +10,6 @@ from datetime import timezone
 ROAD_SCORE = 1.0
 PRIORITY_SCORE = 0.15
 RELOCK_SCORE = 0.15
-DUPLICATE_SCORE = 0.0
 
 EVENT_LABELS = {
     "road": ("road added",),
@@ -141,11 +140,9 @@ def analyze_mapping_events(events):
 
     for row in stats.values():
         row["strategic_score"] = (row["priority"] * PRIORITY_SCORE) + (row["relock"] * RELOCK_SCORE)
-        row["score"] = (
-            (row["road_unique"] * ROAD_SCORE)
-            + row["strategic_score"]
-            + (row["road_duplicates"] * DUPLICATE_SCORE)
-        )
+        # Los duplicados se conservan para auditoría, pero nunca participan
+        # en el peso que determina unidades o puntos.
+        row["score"] = (row["road_unique"] * ROAD_SCORE) + row["strategic_score"]
 
     ranking = sorted(
         stats.values(),
