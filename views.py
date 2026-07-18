@@ -168,7 +168,11 @@ class DashboardView(discord.ui.View):
     )
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
         from embeds import build_ranking_embed
-        await interaction.response.send_message(embed=build_ranking_embed(), ephemeral=True)
+        await interaction.response.send_message(
+            embed=build_ranking_embed(page=0, per_page=15),
+            view=RankingPaginationView(page=0, per_page=15),
+            ephemeral=True,
+        )
 
     @discord.ui.button(
         label="Mi Perfil",

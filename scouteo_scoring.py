@@ -26,17 +26,16 @@ def calculate_scouteo_records(records: list[dict], hours_per_point: int, maps_pe
     for record in records:
         item = dict(record)
         total_minutes = (item["hours"] * 60) + item["minutes"]
-        eligible = total_minutes >= hours_per_point * 60
-        hour_points = 0
-        map_points = item["maps"] // maps_per_point if eligible else 0
-        base_total = map_points
+        hour_points = total_minutes // (hours_per_point * 60)
+        map_points = item["maps"] // maps_per_point
+        base_total = hour_points + map_points
         multiplier = int(item.get("multiplier_hundredths", 100))
         if multiplier < 70 or multiplier > 100:
             raise ValueError(f"Multiplicador fuera del rango permitido: {multiplier}")
 
         item["hour_points"] = hour_points
         item["map_points"] = map_points
-        item["eligible_by_hours"] = eligible
+        item["eligible_by_hours"] = hour_points > 0
         item["base_total"] = base_total
         item["multiplier_hundredths"] = multiplier
         # Las unidades se conservan completas. El multiplicador se aplica a los
@@ -50,22 +49,6 @@ def calculate_scouteo_points(base_units: int, unit_points: int, multiplier_hundr
     numerator = max(0, int(base_units)) * max(0, int(unit_points)) * int(multiplier_hundredths)
     # Redondeo tradicional .5 hacia arriba, sin el redondeo bancario de round().
     return (numerator + 50) // 100
-
-
-def calculate_scouteo_map_points(
-    maps: int,
-    maps_per_unit: int,
-    unit_points: int,
-    multiplier_hundredths: int = 100,
-) -> int:
-    """Calcula puntos proporcionales sin descartar los mapas sobrantes."""
-    maps_per_unit = max(1, int(maps_per_unit))
-    gross_points = (
-        max(0, int(maps))
-        * max(0, int(unit_points))
-        // maps_per_unit
-    )
-    return calculate_scouteo_points(gross_points, 1, multiplier_hundredths)
 
 
 def format_scouteo_summary(record: dict, units: int, unit_points: int, points: int | None = None) -> str:

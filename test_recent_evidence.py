@@ -44,6 +44,32 @@ class RecentEvidenceTests(unittest.TestCase):
         self.assertEqual(rows[1]["participants"], 2)
         self.assertEqual(rows[1]["points"], 9)
 
+    def test_pending_evidence_is_not_counted_and_alerts_only_once(self):
+        self.database.create_evidence_review(
+            "overdue",
+            "1",
+            "Scout Uno",
+            "kill_scout",
+            [("1", "Scout Uno", 2)],
+        )
+        with self.database.get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE evidence_messages
+                SET fecha='2020-01-01T00:00:00', review_message_id='900'
+                WHERE message_id='overdue'
+                """
+            )
+            conn.commit()
+
+        scout = self.database.get_scout("1")
+        self.assertEqual(self.database.calc_puntos_totales(scout), 0)
+        overdue = self.database.get_overdue_pending_evidence(hours=5)
+        self.assertEqual([item["message_id"] for item in overdue], ["overdue"])
+
+        self.assertTrue(self.database.mark_evidence_review_alerted("overdue"))
+        self.assertEqual(self.database.get_overdue_pending_evidence(hours=5), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,52 +69,38 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         self.database.create_evidence_review(
             "day-1", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]
         )
-        self.database.set_scouteo_contributions("day-1", [("1", 120, 3, 4, 3, 100)])
+        self.database.set_scouteo_contributions("day-1", [("1", 120, 1, 4, 3, 100)])
         self.database.approve_evidence("day-1")
         self.assertEqual(self.database.get_scout("1")[5], 0)
 
-        projection = self.database.get_scouteo_projection("1", 120, 6, 4, 3)
+        projection = self.database.get_scouteo_projection("1", 120, 2, 4, 3)
         self.assertEqual(projection["total_minutes"], 240)
-        self.assertEqual(projection["total_maps"], 9)
-        self.assertEqual(projection["units"], 3)
+        self.assertEqual(projection["total_maps"], 3)
+        self.assertEqual(projection["hour_units"], 1)
+        self.assertEqual(projection["map_units"], 1)
+        self.assertEqual(projection["units"], 2)
 
         self.database.create_evidence_review(
-            "day-2", "1", "Scout", "scouteo", [("1", "Scout", 3, 6)]
+            "day-2", "1", "Scout", "scouteo", [("1", "Scout", 2, 10)]
         )
-        self.database.set_scouteo_contributions("day-2", [("1", 120, 6, 4, 3, 100)])
+        self.database.set_scouteo_contributions("day-2", [("1", 120, 2, 4, 3, 100)])
         self.database.approve_evidence("day-2")
-        self.assertEqual(self.database.get_scout("1")[5], 3)
+        self.assertEqual(self.database.get_scout("1")[5], 2)
+        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 10)
+        self.assertEqual(self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_minutes"], 0)
         self.assertEqual(self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_maps"], 0)
 
-    def test_partial_maps_award_only_the_missing_proportional_points(self):
+    def test_four_hours_award_one_unit_even_with_one_map(self):
         self.database.create_evidence_review(
-            "partial-1", "1", "Scout", "scouteo", [("1", "Scout", 0, 1)]
+            "four-hours", "1", "Scout", "scouteo", [("1", "Scout", 1, 5)]
         )
         self.database.set_scouteo_contributions(
-            "partial-1", [("1", 240, 1, 4, 3, 100)]
+            "four-hours", [("1", 266, 1, 4, 3, 100)]
         )
-        preview = self.database.get_scouteo_review_rows("partial-1")[0]
-        self.assertEqual(preview["units"], 0)
-        self.assertEqual(preview["points"], 1)
-        self.database.approve_evidence("partial-1")
-        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 1)
-
-        self.database.create_evidence_review(
-            "partial-2", "1", "Scout", "scouteo", [("1", "Scout", 0, 2)]
-        )
-        self.database.set_scouteo_contributions(
-            "partial-2", [("1", 0, 1, 4, 3, 100)]
-        )
-        self.database.approve_evidence("partial-2")
-        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 3)
-
-        self.database.create_evidence_review(
-            "partial-3", "1", "Scout", "scouteo", [("1", "Scout", 1, 2)]
-        )
-        self.database.set_scouteo_contributions(
-            "partial-3", [("1", 0, 1, 4, 3, 100)]
-        )
-        self.database.approve_evidence("partial-3")
+        preview = self.database.get_scouteo_review_rows("four-hours")[0]
+        self.assertEqual(preview["units"], 1)
+        self.assertEqual(preview["points"], 5)
+        self.database.approve_evidence("four-hours")
         scout = self.database.get_scout("1")
         self.assertEqual(scout[5], 1)
         self.assertEqual(self.database.calc_puntos_totales(scout), 5)
@@ -155,7 +141,8 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
 
         before = self.database.get_scouteo_review_rows("review-multiplier")[0]
         self.assertEqual(before["multiplier_hundredths"], 100)
-        self.assertEqual(before["points"], 30)
+        self.assertEqual(before["units"], 7)
+        self.assertEqual(before["points"], 35)
 
         result = self.database.set_scouteo_review_multiplier(
             "review-multiplier",
@@ -164,7 +151,7 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertEqual(result["row"]["multiplier_hundredths"], 95)
-        self.assertEqual(result["row"]["points"], 29)
+        self.assertEqual(result["row"]["points"], 33)
         self.assertEqual(
             self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_minutes"],
             0,
@@ -172,8 +159,8 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
 
         self.database.approve_evidence("review-multiplier")
         scout = self.database.get_scout("1")
-        self.assertEqual(scout[5], 6)
-        self.assertEqual(self.database.calc_puntos_totales(scout), 29)
+        self.assertEqual(scout[5], 7)
+        self.assertEqual(self.database.calc_puntos_totales(scout), 33)
 
         locked = self.database.set_scouteo_review_multiplier(
             "review-multiplier",

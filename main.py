@@ -27,6 +27,7 @@ from database import (
     create_evidence_review,
     get_audit_events,
     get_evidence_by_thread,
+    get_evidence_summary,
     get_evidence_participants as db_get_evidence_participants,
     get_evidence_review_message_id,
     get_all_scouts,
@@ -36,6 +37,7 @@ from database import (
     get_latest_ranking_snapshot,
     get_puntos,
     get_pending_evidence_message_ids,
+    get_overdue_pending_evidence,
     get_pending_count,
     get_priority_min_points,
     get_prio_status,
@@ -48,6 +50,7 @@ from database import (
     get_ranking_snapshot_rows,
     init_db,
     move_evidence_to_snapshot,
+    mark_evidence_review_alerted,
     remove_scout_alias,
     record_audit_event,
     reset_all,
@@ -65,7 +68,8 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_PERFIL, COLOR
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
     EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
     AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC, \
-    DEFAULT_PRIORITY_MIN_POINTS, PRIORITY_PROTECTED_ROLE_IDS, PRIORITY_ROLE_ID
+    DEFAULT_PRIORITY_MIN_POINTS, GM_ROLE_IDS, PRIORITY_PROTECTED_ROLE_IDS, PRIORITY_ROLE_ID, \
+    REVIEWER_ROLE_IDS
 from views import (
     DashboardView,
     EvidenceAuthorConfirmView,
@@ -97,7 +101,6 @@ from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_
 import participants as participant_tools
 import mapping_analysis
 from scouteo_scoring import (
-    calculate_scouteo_map_points,
     calculate_scouteo_records,
     calculate_scouteo_points,
     format_scouteo_summary,
@@ -116,6 +119,7 @@ tree = bot.tree
 COMMANDS_SYNCED = False
 RESET_TASK_STARTED = False
 TAUNT_TASK_STARTED = False
+PENDING_ALERT_TASK_STARTED = False
 AURA_TAUNT_RESPONSE = "RankingBot confirma: el aura se farmea, la envidia se nota. Sube evidencia o vuelve a zona azul."
 AURA_TAUNT_TARGETS = (
     (1435778824775274581, 1514156352463700051),
@@ -206,7 +210,7 @@ class SafeModal(discord.ui.Modal):
 
 @bot.event
 async def on_ready():
-    global COMMANDS_SYNCED, RESET_TASK_STARTED, TAUNT_TASK_STARTED
+    global COMMANDS_SYNCED, RESET_TASK_STARTED, TAUNT_TASK_STARTED, PENDING_ALERT_TASK_STARTED
     init_db()
     migrate_scouteo_accumulation_settings()
     bot.add_view(DashboardView())
@@ -234,6 +238,10 @@ async def on_ready():
     if not TAUNT_TASK_STARTED:
         bot.loop.create_task(reply_to_pending_aura_taunts())
         TAUNT_TASK_STARTED = True
+
+    if not PENDING_ALERT_TASK_STARTED:
+        bot.loop.create_task(pending_evidence_alert_loop())
+        PENDING_ALERT_TASK_STARTED = True
 
 # ── /panel_scouts ─────────────────────────────────────────────────────────────
 
@@ -430,6 +438,120 @@ async def reply_to_pending_aura_taunts():
             print(f"[TAUNT] Sin permisos para responder en canal {channel_id}")
         except discord.HTTPException as err:
             print(f"[TAUNT ERROR] {message_id}: {err}")
+
+
+def get_pending_alert_role(guild: discord.Guild):
+    reviewer_roles = [
+        guild.get_role(int(role_id))
+        for role_id in REVIEWER_ROLE_IDS
+        if str(role_id).isdigit()
+    ]
+    reviewer_roles = [role for role in reviewer_roles if role is not None]
+    officer_roles = [
+        role for role in reviewer_roles
+        if "officer" in role.name.casefold()
+    ]
+    if officer_roles:
+        return sorted(officer_roles, key=lambda role: role.position, reverse=True)[0]
+
+    non_gm_roles = [
+        role for role in reviewer_roles
+        if str(role.id) not in GM_ROLE_IDS
+    ]
+    if non_gm_roles:
+        return sorted(non_gm_roles, key=lambda role: role.position, reverse=True)[0]
+
+    gm_roles = [
+        guild.get_role(int(role_id))
+        for role_id in GM_ROLE_IDS
+        if str(role_id).isdigit()
+    ]
+    gm_roles = [role for role in gm_roles if role is not None]
+    return sorted(gm_roles, key=lambda role: role.position, reverse=True)[0] if gm_roles else None
+
+
+async def alert_overdue_pending_evidence():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    role = get_pending_alert_role(guild)
+    if not role:
+        print("[PENDING ALERT] No encontre un rol Officer o GM configurado.")
+        return
+
+    try:
+        channel = (
+            bot.get_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+            or await bot.fetch_channel(EVIDENCE_REVIEW_CHANNEL_ID)
+        )
+    except discord.HTTPException as err:
+        print(f"[PENDING ALERT] No pude abrir el canal de revision: {err}")
+        return
+
+    for item in get_overdue_pending_evidence(hours=5):
+        evidence = get_evidence_summary(item["message_id"])
+        if not evidence or evidence[4] != "pending":
+            continue
+        activity_label = ACTIVIDADES.get(
+            item["activity"],
+            {"label": item["activity"] or "Evidencia"},
+        )["label"]
+        content = (
+            f"{role.mention} esta revisión de **{activity_label}** "
+            "lleva más de **5 horas** pendiente. Por favor, revísenla."
+        )
+        try:
+            try:
+                review_message = await channel.fetch_message(
+                    int(item["review_message_id"])
+                )
+                await review_message.reply(
+                    content,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=True,
+                        users=False,
+                        everyone=False,
+                    ),
+                )
+            except discord.NotFound:
+                await channel.send(
+                    f"{content}\nID de evidencia: `{item['message_id']}`",
+                    allowed_mentions=discord.AllowedMentions(
+                        roles=True,
+                        users=False,
+                        everyone=False,
+                    ),
+                )
+            if mark_evidence_review_alerted(item["message_id"]):
+                record_audit_event(
+                    "evidencias",
+                    "alerta_revision_pendiente",
+                    actor_name="Sistema",
+                    target_type="evidencia",
+                    target_id=item["message_id"],
+                    summary=(
+                        f"Etiqueto a {role.name} porque la revision de "
+                        f"{activity_label} supero 5 horas pendiente."
+                    ),
+                    details={
+                        "rol_id": str(role.id),
+                        "actividad": item["activity"],
+                        "creada": item["created_at"],
+                    },
+                )
+        except (discord.Forbidden, discord.HTTPException) as err:
+            print(f"[PENDING ALERT] {item['message_id']}: {err}")
+
+
+async def pending_evidence_alert_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await alert_overdue_pending_evidence()
+        except Exception as err:
+            print(f"[PENDING ALERT ERROR] {err}")
+        await asyncio.sleep(300)
 
 
 def should_reply_to_aura_taunt(text: str):
@@ -849,19 +971,18 @@ async def create_scouteo_count_review(
         combined = combine_scouteo_records(item["records"])
         incoming_minutes = sum((int(record["hours"]) * 60) + int(record["minutes"]) for record in item["records"])
         incoming_maps = sum(int(record["maps"]) for record in item["records"])
-        multiplier = min(int(record.get("multiplier_hundredths", 100)) for record in item["records"])
         projection = get_scouteo_projection(
             item["user_id"], incoming_minutes, incoming_maps,
             hours_per_point, maps_per_point, target_snapshot_id,
-            unit_points, multiplier,
         )
         units = projection["units"]
-        points = projection["points"]
+        multiplier = min(int(record.get("multiplier_hundredths", 100)) for record in item["records"])
+        points = calculate_scouteo_points(units, unit_points, multiplier)
         combined.update({
             "total": units,
             "base_total": units,
-            "hour_points": 0,
-            "map_points": units,
+            "hour_points": projection["hour_units"],
+            "map_points": projection["map_units"],
             "calculated_points": points,
             "multiplier_hundredths": multiplier,
             "accumulated_minutes": projection["total_minutes"],
@@ -916,7 +1037,7 @@ async def create_scouteo_count_review(
         color=COLOR_WARNING,
         description=(
             f"**{ACTIVIDADES['scouteo']['label']}** · Resumen del Día → **{target_label}**\n"
-            f"`mínimo {hours_per_point}h acumuladas · cada {maps_per_point} mapas = 1u` · "
+            f"`{hours_per_point}h = 1u · {maps_per_point} mapas = 1u` · "
             f"**{sum(row[4] for row in participant_rows)} pts**\n"
             f"{message.channel.mention} · [Abrir evidencia]({message.jump_url})"
         )
@@ -1357,13 +1478,11 @@ def build_scouteo_count_embed(
 ):
     unit_points = get_puntos("scouteo")
     total_points = sum(
-        calculate_scouteo_map_points(
-            record["maps"],
-            maps_per_point,
+        calculate_scouteo_points(
+            record["total"],
             unit_points,
             record.get("multiplier_hundredths", 100),
         )
-        if record.get("eligible_by_hours") else 0
         for record in records
     )
     embed = discord.Embed(
@@ -1371,7 +1490,7 @@ def build_scouteo_count_embed(
         description=(
             f"Mensaje: [abrir resumen]({source_message.jump_url})\n"
             f"Destino: **{target_label}**\n"
-            f"Reglas: `mínimo {hours_per_point}h acumuladas | cada {maps_per_point} mapas = 1 unidad`\n"
+            f"Reglas: `{hours_per_point}h = 1 unidad | {maps_per_point} mapas = 1 unidad`\n"
             f"Valor Scouteo: `{unit_points}` pts por unidad\n"
             f"Total: `{total_points}` pts"
         ),
@@ -1379,7 +1498,7 @@ def build_scouteo_count_embed(
     )
     embed.add_field(
         name="Preview",
-        value=format_scouteo_count_table(records, unit_points, maps_per_point),
+        value=format_scouteo_count_table(records, unit_points),
         inline=False,
     )
     if is_late_closure:
@@ -1391,11 +1510,7 @@ def build_scouteo_count_embed(
     return embed
 
 
-def format_scouteo_count_table(
-    records: list[dict],
-    unit_points: int,
-    maps_per_point: int,
-):
+def format_scouteo_count_table(records: list[dict], unit_points: int):
     if not records:
         return "Sin puntos calculados."
 
@@ -1411,15 +1526,9 @@ def format_scouteo_count_table(
         map_points = str(record["map_points"]).rjust(3)
         multiplier = f"{record.get('multiplier_hundredths', 100) / 100:.2f}".rjust(4)
         total = str(record["total"]).rjust(2)
-        points = str(
-            calculate_scouteo_map_points(
-                record["maps"],
-                maps_per_point,
-                unit_points,
-                record.get("multiplier_hundredths", 100),
-            )
-            if record.get("eligible_by_hours") else 0
-        ).rjust(3)
+        points = str(calculate_scouteo_points(
+            record["total"], unit_points, record.get("multiplier_hundredths", 100)
+        )).rjust(3)
         lines.append(f"{name} {time_text} {maps} {hour_points} {map_points} {multiplier} {total} {points}")
 
     if len(records) > 12:

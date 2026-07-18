@@ -1,8 +1,10 @@
+import inspect
 import unittest
 from unittest import mock
 
 import main
 import permissions
+import views
 from permissions import AccessLevel
 
 
@@ -116,6 +118,11 @@ class HierarchyDashboardTests(unittest.TestCase):
             exports,
             ["Actual XLSX", "Actual CSV", "Cierre XLSX", "Cierre CSV"],
         )
+
+    def test_general_ranking_entry_keeps_pagination_controls(self):
+        source = inspect.getsource(views.DashboardView.ranking)
+        self.assertIn("RankingPaginationView", source)
+        self.assertIn("per_page=15", source)
 
     def test_only_summary_commands_are_registered(self):
         self.assertEqual(

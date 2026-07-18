@@ -73,7 +73,7 @@ Para corregir esa semana usa `/admin` > **Editar Scout** o **Ajustar Puntos** co
 
 ## Conteo acumulado de scouteo
 
-Los resúmenes diarios aprobados acumulan minutos y mapas válidos por scout durante la semana. Se requieren al menos 4 horas acumuladas para habilitar puntos; desde entonces, cada 3 mapas válidos acumulados generan una unidad de scouteo. MapasBot solo reporta un mapa como válido cuando acumula al menos 1 hora de cobertura y conserva entre días los minutos pendientes por mapa. Los mapas sobrantes se conservan y los resúmenes rechazados no modifican el saldo. El saldo actual se limpia junto con el reset semanal del ranking.
+Los resúmenes diarios aprobados acumulan minutos y mapas válidos por scout durante la semana. Cada 4 horas acumuladas generan una unidad de scouteo y cada 3 mapas válidos acumulados generan otra unidad. MapasBot solo reporta un mapa como válido cuando acumula al menos 1 hora de cobertura y conserva entre días los minutos pendientes por mapa. Los minutos y mapas sobrantes se conservan; los resúmenes rechazados no modifican el saldo. El saldo actual se limpia junto con el reset semanal del ranking.
 
 Durante la revision, Officer/Admin puede abrir **Multiplicador**, elegir una
 persona y ajustar su valor entre `x0.70` y `x1.00`. El cambio recalcula los
