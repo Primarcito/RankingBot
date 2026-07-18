@@ -18,14 +18,15 @@ from emojis import text_emoji
 
 def _medal(pos: int) -> str:
     medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(pos)
-    return f"{medal} **{pos}.**" if medal else f"**{pos}.**"
+    return medal or f"**{pos}.**"
 
 
-def _prio_badge(points: int, cutoff: int) -> str:
+def _ranking_line(pos: int, row, points: int, cutoff: int) -> str:
     status = get_prio_status(points, cutoff)
-    if status["qualifies"]:
-        return f"{text_emoji('PRIO')} **Prio**"
-    return f"Faltan **{status['missing']} pts**"
+    line = f"{_medal(pos)} **{row[1]}** · {points} pts"
+    if not status["qualifies"]:
+        line += f" · faltan **{status['missing']} pts**"
+    return line
 
 
 def get_ranked_scouts():
@@ -45,7 +46,7 @@ def build_dashboard_embed() -> discord.Embed:
 
     embed = discord.Embed(
         title=f"{text_emoji('RANKING')} Ranking Semanal · TyrannT",
-        description=f"Prio: **{cutoff} pts** · Sin niveles.",
+        description=f"{text_emoji('PRIO')} **Prio desde {cutoff} pts** · Sin niveles.",
         color=COLOR_PANEL,
     )
     embed.add_field(
@@ -69,17 +70,22 @@ def build_dashboard_embed() -> discord.Embed:
     )
 
     if ranked:
-        ranking = []
-        for pos, (row, points) in enumerate(ranked[:10], start=1):
-            ranking.append(
-                f"{_medal(pos)} **{row[1]}** · **{points} pts** · "
-                f"{_prio_badge(points, cutoff)}"
+        visible = ranked[:10]
+        podium = [
+            _ranking_line(pos, row, points, cutoff)
+            for pos, (row, points) in enumerate(visible[:3], start=1)
+        ]
+        classification = [
+            _ranking_line(pos, row, points, cutoff)
+            for pos, (row, points) in enumerate(visible[3:], start=4)
+        ]
+        embed.add_field(name="Podio", value="\n".join(podium), inline=False)
+        if classification:
+            embed.add_field(
+                name="Clasificación",
+                value="\n".join(classification),
+                inline=False,
             )
-        embed.add_field(
-            name=f"{text_emoji('RANKING')} Top 10",
-            value="\n".join(ranking),
-            inline=False,
-        )
     else:
         embed.add_field(
             name=f"{text_emoji('RANKING')} Ranking",
@@ -107,26 +113,51 @@ def build_ranking_embed(limit: int = 15, page: int = 0, per_page: int | None = N
     cutoff = get_priority_min_points()
     embed = discord.Embed(
         title=f"{text_emoji('RANKING')} Clasificación Semanal",
-        description=None,
+        description=(
+            f"{text_emoji('PRIO')} **Prio desde {cutoff} pts** · "
+            f"{len(scouts)} scouts"
+        ),
         color=COLOR_RANKING,
     )
     if not ranked:
-        embed.description = "Aun no hay puntos registrados."
+        embed.add_field(
+            name="Clasificación",
+            value="Aun no hay puntos registrados.",
+            inline=False,
+        )
         if page_text:
-            embed.set_footer(text=f"{page_text} · Prio: {cutoff} pts · {len(scouts)} scouts")
+            embed.set_footer(text=page_text)
         return embed
 
-    lines = []
-    for pos, (row, points) in enumerate(ranked, start=start_pos):
-        lines.append(
-            f"{_medal(pos)} **{row[1]}** · **{points} pts** · "
-            f"{_prio_badge(points, cutoff)}"
+    positioned = list(enumerate(ranked, start=start_pos))
+    podium = [
+        _ranking_line(pos, row, points, cutoff)
+        for pos, (row, points) in positioned
+        if pos <= 3
+    ]
+    classification = [
+        _ranking_line(pos, row, points, cutoff)
+        for pos, (row, points) in positioned
+        if pos > 3
+    ]
+    if podium:
+        embed.add_field(name="Podio", value="\n".join(podium), inline=False)
+    if classification:
+        field_name = (
+            "Clasificación"
+            if start_pos <= 3
+            else f"Puestos {start_pos}–{start_pos + len(ranked) - 1}"
         )
-    embed.description = "\n".join(lines)
-    footer = f"Prio: {cutoff} pts · {len(scouts)} scouts"
+        embed.add_field(
+            name=field_name,
+            value="\n".join(classification),
+            inline=False,
+        )
+
     if page_text:
-        footer = f"{page_text} · {footer}"
-    embed.set_footer(text=footer)
+        embed.set_footer(text=page_text)
+    elif len(ranked) < len(ranked_all):
+        embed.set_footer(text=f"Mostrando {len(ranked)} de {len(ranked_all)}")
     return embed
 
 

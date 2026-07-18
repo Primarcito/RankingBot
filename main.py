@@ -2637,7 +2637,7 @@ class CountingActivityButton(discord.ui.Button):
 class CountingPendingButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Pendientes",
+            label="Ver Pendientes",
             emoji=button_emoji("PENDING"),
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -2690,7 +2690,7 @@ class AdminDashboardView(SafeView):
 class HubProfileButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Perfil",
+            label="Mi Perfil",
             emoji=button_emoji("SCOUT"),
             style=discord.ButtonStyle.secondary,
             row=0,
@@ -2706,7 +2706,7 @@ class HubProfileButton(discord.ui.Button):
 class HubRankingButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Ranking",
+            label="Ver Ranking",
             emoji=button_emoji("RANKING"),
             style=discord.ButtonStyle.primary,
             row=0,
@@ -2726,7 +2726,7 @@ class HubRankingButton(discord.ui.Button):
 class HubRequirementButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Prio",
+            label="Requisito Prio",
             emoji=button_emoji("PRIO"),
             style=discord.ButtonStyle.secondary,
             row=0,
@@ -2742,7 +2742,7 @@ class HubRequirementButton(discord.ui.Button):
 class HubEvidenceButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Evidencias",
+            label="Revisar Evidencias",
             emoji=button_emoji("EVIDENCE"),
             style=discord.ButtonStyle.primary,
             row=1,
@@ -2776,7 +2776,7 @@ class EvidenceOperationsView(SafeView):
         return False
 
     @discord.ui.button(
-        label="Scouteo",
+        label="Contar Scouteo",
         emoji=button_emoji("SCOUTING"),
         style=discord.ButtonStyle.primary,
     )
@@ -2784,7 +2784,7 @@ class EvidenceOperationsView(SafeView):
         await interaction.response.send_modal(ScouteoCountLaunchModal())
 
     @discord.ui.button(
-        label="Mapeo",
+        label="Analizar Mapeo",
         emoji=button_emoji("MAP"),
         style=discord.ButtonStyle.secondary,
     )
@@ -2792,7 +2792,7 @@ class EvidenceOperationsView(SafeView):
         await analizar_mapeo.callback(interaction, fuente="actual")
 
     @discord.ui.button(
-        label="Cola",
+        label="Ver Pendientes",
         emoji=button_emoji("PENDING"),
         style=discord.ButtonStyle.secondary,
     )
@@ -2838,10 +2838,10 @@ class ScouteoCountLaunchModal(SafeModal):
 class HubScoutProfileButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Scout",
+            label="Editar Scout",
             emoji=button_emoji("SCOUT"),
             style=discord.ButtonStyle.secondary,
-            row=1,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -2883,10 +2883,10 @@ class ScoutProfilePicker(discord.ui.UserSelect):
 class HubBulkPointsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Ajustes",
+            label="Ajustar Puntos",
             emoji=button_emoji("POINTS"),
             style=discord.ButtonStyle.secondary,
-            row=1,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -2903,10 +2903,10 @@ class HubBulkPointsButton(discord.ui.Button):
 class HubRosterButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Padrón",
+            label="Gestionar Padrón",
             emoji=button_emoji("ROSTER"),
             style=discord.ButtonStyle.secondary,
-            row=1,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -2923,7 +2923,7 @@ class HubRosterButton(discord.ui.Button):
 class HubPublishInfoButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Publicar",
+            label="Publicar Ranking",
             emoji=button_emoji("PUBLISH"),
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -2981,7 +2981,7 @@ def build_audit_dashboard_embed():
 class HubAuditButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Historial",
+            label="Ver Historial",
             emoji=button_emoji("AUDIT"),
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -3042,7 +3042,7 @@ class AuditDashboardView(SafeView):
 class HubPriorityButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Prio",
+            label="Gestionar Prio",
             emoji=button_emoji("PRIO"),
             style=discord.ButtonStyle.primary,
             row=2,
@@ -3067,7 +3067,7 @@ class HubPriorityButton(discord.ui.Button):
 class HubSettingsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Valores",
+            label="Configurar Puntos",
             emoji=button_emoji("POINTS"),
             style=discord.ButtonStyle.secondary,
             row=2,
@@ -3091,7 +3091,7 @@ class HubSettingsButton(discord.ui.Button):
 class HubExportButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Exportar",
+            label="Exportar Ranking",
             emoji=button_emoji("EXPORT"),
             style=discord.ButtonStyle.secondary,
             row=2,
@@ -3181,10 +3181,10 @@ class RankingExportView(SafeView):
 class HubAfkButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="AFK",
+            label="Revisar AFK",
             emoji=button_emoji("AFK"),
             style=discord.ButtonStyle.secondary,
-            row=2,
+            row=3,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -3197,10 +3197,10 @@ class HubAfkButton(discord.ui.Button):
 class HubClosureButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Cierre",
+            label="Cerrar Semana",
             emoji=button_emoji("CALENDAR"),
             style=discord.ButtonStyle.danger,
-            row=2,
+            row=3,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -3221,7 +3221,7 @@ class HubClosureButton(discord.ui.Button):
 class HubSystemButton(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Sistema",
+            label="Herramientas GM",
             emoji=button_emoji("SETTINGS"),
             style=discord.ButtonStyle.secondary,
             row=3,
@@ -3253,7 +3253,7 @@ class LeaderSystemView(SafeView):
         return False
 
     @discord.ui.button(
-        label="Paneles",
+        label="Actualizar Paneles",
         emoji=button_emoji("PANELS"),
         style=discord.ButtonStyle.primary,
     )
@@ -3272,7 +3272,7 @@ class LeaderSystemView(SafeView):
         await interaction.followup.send("Paneles publicos actualizados.", ephemeral=True)
 
     @discord.ui.button(
-        label="Mover conteo",
+        label="Mover Conteo",
         emoji=button_emoji("CALENDAR"),
         style=discord.ButtonStyle.secondary,
     )
@@ -3280,7 +3280,7 @@ class LeaderSystemView(SafeView):
         await interaction.response.send_modal(MoveCountLaunchModal())
 
     @discord.ui.button(
-        label="Checkpoint",
+        label="Reiniciar Mapeo",
         emoji=button_emoji("MAP"),
         style=discord.ButtonStyle.danger,
     )

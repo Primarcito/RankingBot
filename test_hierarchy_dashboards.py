@@ -64,7 +64,7 @@ class HierarchyDashboardTests(unittest.TestCase):
             for item in main.AdminDashboardView(AccessLevel.GM_LEADER).children
         ]
 
-        self.assertEqual(ranking, ["Perfil", "Ranking", "Prio"])
+        self.assertEqual(ranking, ["Mi Perfil", "Ver Ranking", "Requisito Prio"])
         self.assertEqual(
             counting,
             [
@@ -73,31 +73,41 @@ class HierarchyDashboardTests(unittest.TestCase):
                 "Limpieza Aspecto",
                 "Scouteo",
                 "Mapeo",
-                "Pendientes",
+                "Ver Pendientes",
             ],
         )
         self.assertEqual(
             officer_admin,
-            ["Scout", "Ajustes", "Padrón", "Publicar", "Historial"],
+            [
+                "Editar Scout",
+                "Ajustar Puntos",
+                "Gestionar Padrón",
+                "Publicar Ranking",
+                "Ver Historial",
+            ],
         )
         self.assertEqual(
             gm_leader,
             [
-                "Scout",
-                "Ajustes",
-                "Padrón",
-                "Publicar",
-                "Historial",
-                "Prio",
-                "Valores",
-                "Exportar",
-                "AFK",
-                "Cierre",
-                "Sistema",
+                "Editar Scout",
+                "Ajustar Puntos",
+                "Gestionar Padrón",
+                "Publicar Ranking",
+                "Ver Historial",
+                "Gestionar Prio",
+                "Configurar Puntos",
+                "Exportar Ranking",
+                "Revisar AFK",
+                "Cerrar Semana",
+                "Herramientas GM",
             ],
         )
         self.assertLessEqual(len(counting), 6)
         self.assertLessEqual(len(gm_leader), 11)
+        self.assertEqual(
+            [item.row for item in main.AdminDashboardView(AccessLevel.GM_LEADER).children],
+            [0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 3],
+        )
 
     def test_grouped_dashboards_keep_export_tools(self):
         exports = [item.label for item in main.RankingExportView().children]

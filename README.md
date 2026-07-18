@@ -44,32 +44,32 @@ en botones y conserva las validaciones de jerarquía de cada operación.
 
 | Ruta | Función |
 |---|---|
-| `/ranking` > **Perfil** | Tu perfil y puntos |
+| `/ranking` > **Mi Perfil** | Tu perfil y puntos |
 | `/conteo` > **Kill Scout / Kill Pelea / Limpieza** | Conteo manual auditado para el ranking actual |
 | `/conteo` > **Scouteo** | Conteo del resumen diario enviado a revisión |
 | `/conteo` > **Mapeo** | Análisis semanal de logs antes de confirmar |
-| `/conteo` > **Pendientes** | Total, canal y evidencias recientes |
-| `/admin` > **Scout** | Perfil y correcciones individuales |
-| `/admin` > **Ajustes** | Ajustes grupales del ranking actual o último cierre |
-| `/admin` > **Padrón** | Aliases y alts |
-| `/admin` > **Publicar** | Guía y ranking público |
-| `/admin` > **Historial** | Últimos movimientos y auditoría completa en Markdown |
-| `/admin` > **Prio** | Corte, CSV y sincronización de rol |
-| `/admin` > **AFK** | Auditoría de inactividad y kicks |
-| `/admin` > **Exportar** | Ranking actual o cierre en XLSX/CSV |
-| `/admin` > **Cierre** | Guarda el cierre y limpia el ranking |
-| `/admin` > **Sistema > Mover conteo** | Corrige el cierre de un conteo |
-| `/admin` > **Sistema > Checkpoint** | Reinicia el análisis de mapeo |
-| `/admin` > **Sistema > Paneles** | Actualiza los paneles públicos |
+| `/conteo` > **Ver Pendientes** | Total, canal y evidencias recientes |
+| `/admin` > **Editar Scout** | Perfil y correcciones individuales |
+| `/admin` > **Ajustar Puntos** | Ajustes grupales del ranking actual o último cierre |
+| `/admin` > **Gestionar Padrón** | Aliases y alts |
+| `/admin` > **Publicar Ranking** | Guía y ranking público |
+| `/admin` > **Ver Historial** | Últimos movimientos y auditoría completa en Markdown |
+| `/admin` > **Gestionar Prio** | Corte, CSV y sincronización de rol |
+| `/admin` > **Revisar AFK** | Auditoría de inactividad y kicks |
+| `/admin` > **Exportar Ranking** | Ranking actual o cierre en XLSX/CSV |
+| `/admin` > **Cerrar Semana** | Guarda el cierre y limpia el ranking |
+| `/admin` > **Herramientas GM > Mover Conteo** | Corrige el cierre de un conteo |
+| `/admin` > **Herramientas GM > Reiniciar Mapeo** | Reinicia el análisis de mapeo |
+| `/admin` > **Herramientas GM > Actualizar Paneles** | Actualiza los paneles públicos |
 
 ## Cierres semanales
 
-Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar `/admin` > **Prio** con la fuente del último cierre para dar o quitar el rol aunque el ranking nuevo ya esté limpio.
+Antes de cada reset semanal el bot guarda una copia del ranking en `ranking_snapshots` y `ranking_snapshot_rows`. Ese cierre permite usar `/admin` > **Gestionar Prio** con la fuente del último cierre para dar o quitar el rol aunque el ranking nuevo ya esté limpio.
 
 Si `/conteo` > **Scouteo** se usa después del reset pero el resumen diario trae una fecha de la semana cerrada, la revisión queda apuntando a ese cierre semanal. Al aprobarla suma esos puntos al cierre archivado, no al ranking nuevo.
 
 Para descargar la semana pasada usa `/admin` > **Exportar > Cierre XLSX/CSV**.
-Para corregir esa semana usa `/admin` > **Scout** o **Ajustes** con la fuente del último cierre; las restas no bajan una actividad por debajo de 0.
+Para corregir esa semana usa `/admin` > **Editar Scout** o **Ajustar Puntos** con la fuente del último cierre; las restas no bajan una actividad por debajo de 0.
 
 ## Conteo acumulado de scouteo
 
@@ -111,7 +111,7 @@ AFKs, publicaciones, exportaciones, configuracion y cierres. Cada evento
 conserva fecha UTC, responsable, objetivo, resumen y detalles antes/despues
 cuando corresponde.
 
-La descarga se genera desde `/admin` > **Historial** > **Exportar MD** y
+La descarga se genera desde `/admin` > **Ver Historial** > **Exportar MD** y
 contiene todos los eventos, del mas reciente al mas antiguo. Consultar o
 actualizar visualmente un panel no genera ruido; las exportaciones y acciones
 que cambian datos si quedan registradas.

@@ -54,7 +54,12 @@ def draw_compact_button(canvas, draw, x, y, width, label, emoji, style="secondar
     }
     rounded(draw, (x, y, x + width, y + 46), colors[style], radius=9)
     canvas.alpha_composite(icon(emoji, 24), (x + 9, y + 11))
-    draw.text((x + 40, y + 12), label, font=font(15, True), fill=(255, 255, 255))
+    label_size = 15
+    label_font = font(label_size, True)
+    while draw.textbbox((0, 0), label, font=label_font)[2] > width - 48 and label_size > 10:
+        label_size -= 1
+        label_font = font(label_size, True)
+    draw.text((x + 40, y + (46 - label_size) // 2 - 1), label, font=label_font, fill=(255, 255, 255))
 
 
 def wrapped_line_count(text, width_chars):
@@ -135,9 +140,9 @@ def build_dashboards():
             ("TÚ", "41 pts · #12 · Faltan 9 pts"),
         ],
         [
-            ("Perfil", "ranking_scout", "secondary"),
-            ("Ranking", "ranking_trofeo", "primary"),
-            ("Prio", "ranking_prio", "secondary"),
+            ("Mi Perfil", "ranking_scout", "secondary"),
+            ("Ver Ranking", "ranking_trofeo", "primary"),
+            ("Requisito Prio", "ranking_prio", "secondary"),
         ],
     )
     draw_dashboard_card(
@@ -162,10 +167,10 @@ def build_dashboards():
         [
             ("Kill Scout", "ranking_kill_scout", "secondary"),
             ("Kill Pelea", "ranking_kill_pelea", "secondary"),
-            ("Limpieza", "ranking_limpieza", "secondary"),
+            ("Limpieza Aspecto", "ranking_limpieza", "secondary"),
             ("Scouteo", "ranking_scouteo", "primary"),
             ("Mapeo", "ranking_mapeo", "secondary"),
-            ("Pendientes", "ranking_pendiente", "secondary"),
+            ("Ver Pendientes", "ranking_pendiente", "secondary"),
         ],
     )
     draw_dashboard_card(
@@ -182,17 +187,17 @@ def build_dashboards():
             ("ÚLTIMO CAMBIO", "Multiplicador actualizado · ChinoJVS x1.00 → x0.85"),
         ],
         [
-            ("Scout", "ranking_scout", "secondary"),
-            ("Ajustes", "ranking_puntos", "secondary"),
-            ("Padrón", "ranking_personas", "secondary"),
-            ("Publicar", "ranking_publicar", "secondary"),
-            ("Historial", "ranking_auditoria", "secondary"),
-            ("Prio", "ranking_prio", "secondary"),
-            ("Valores", "ranking_puntos", "secondary"),
-            ("Exportar", "ranking_exportar", "secondary"),
-            ("AFK", "ranking_afk", "secondary"),
-            ("Cierre", "ranking_cierre", "danger"),
-            ("Sistema", "ranking_config", "secondary"),
+            ("Editar Scout", "ranking_scout", "secondary"),
+            ("Ajustar Puntos", "ranking_puntos", "secondary"),
+            ("Gestionar Padrón", "ranking_personas", "secondary"),
+            ("Publicar Ranking", "ranking_publicar", "secondary"),
+            ("Ver Historial", "ranking_auditoria", "secondary"),
+            ("Gestionar Prio", "ranking_prio", "secondary"),
+            ("Configurar Puntos", "ranking_puntos", "secondary"),
+            ("Exportar Ranking", "ranking_exportar", "secondary"),
+            ("Revisar AFK", "ranking_afk", "secondary"),
+            ("Cerrar Semana", "ranking_cierre", "danger"),
+            ("Herramientas GM", "ranking_config", "secondary"),
         ],
     )
     canvas.convert("RGB").save(OUTPUT_DIR / "ranking-dashboards-preview.png", quality=95)

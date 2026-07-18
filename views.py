@@ -160,7 +160,7 @@ class DashboardView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Ranking",
+        label="Ver Ranking",
         emoji=button_emoji("RANKING"),
         style=discord.ButtonStyle.primary,
         custom_id="dash_ranking",
@@ -171,7 +171,7 @@ class DashboardView(discord.ui.View):
         await interaction.response.send_message(embed=build_ranking_embed(), ephemeral=True)
 
     @discord.ui.button(
-        label="Perfil",
+        label="Mi Perfil",
         emoji=button_emoji("SCOUT"),
         style=discord.ButtonStyle.secondary,
         custom_id="dash_profile",
@@ -185,7 +185,7 @@ class DashboardView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Prio",
+        label="Requisito Prio",
         emoji=button_emoji("PRIO"),
         style=discord.ButtonStyle.secondary,
         custom_id="dash_prio_requirement",
@@ -205,7 +205,7 @@ class InfoRankingView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Perfil",
+        label="Mi Perfil",
         emoji=button_emoji("SCOUT"),
         style=discord.ButtonStyle.secondary,
         custom_id="info_ranking_profile",
@@ -220,7 +220,7 @@ class InfoRankingView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Ranking",
+        label="Ver Ranking",
         emoji=button_emoji("RANKING"),
         style=discord.ButtonStyle.primary,
         custom_id="info_ranking_general",
@@ -236,7 +236,7 @@ class InfoRankingView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Prio",
+        label="Requisito Prio",
         emoji=button_emoji("PRIO"),
         style=discord.ButtonStyle.secondary,
         custom_id="info_ranking_caps",

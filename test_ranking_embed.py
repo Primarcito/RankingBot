@@ -27,12 +27,16 @@ class RankingEmbedTests(unittest.TestCase):
         ):
             result = embeds.build_ranking_embed(page=0, per_page=10)
 
-        self.assertNotIn("█", result.description)
-        self.assertNotIn("░", result.description)
-        self.assertIn("🥇 **1.** **ChinoJVS** · **168 pts**", result.description)
-        self.assertIn("**Prio**", result.description)
-        self.assertIn("**4.** **Jesus** · **84 pts** · Faltan **6 pts**", result.description)
-        self.assertEqual(result.footer.text, "Página 1/1 · Prio: 90 pts · 4 scouts")
+        ranking_text = "\n".join(field.value for field in result.fields)
+        self.assertNotIn("█", ranking_text)
+        self.assertNotIn("░", ranking_text)
+        self.assertEqual([field.name for field in result.fields], ["Podio", "Clasificación"])
+        self.assertIn("**Prio desde 90 pts** · 4 scouts", result.description)
+        self.assertIn("🥇 **ChinoJVS** · 168 pts", ranking_text)
+        self.assertIn("🥈 **Sherlock22** · 146 pts", ranking_text)
+        self.assertIn("**4.** **Jesus** · 84 pts · faltan **6 pts**", ranking_text)
+        self.assertNotIn("**Prio**", ranking_text)
+        self.assertEqual(result.footer.text, "Página 1/1")
 
 
 if __name__ == "__main__":
