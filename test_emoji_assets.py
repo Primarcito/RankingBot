@@ -41,6 +41,23 @@ class EmojiAssetTests(unittest.TestCase):
             len(set(ACTIVITY_EMOJI_KEYS.values())),
         )
 
+    def test_reaction_emojis_fill_the_discord_canvas(self):
+        emoji_dir = Path(__file__).resolve().parent / "assets" / "discord" / "emojis"
+        for name in (
+            "ranking_aprobado",
+            "ranking_rechazado",
+            "ranking_pendiente",
+        ):
+            with Image.open(emoji_dir / f"{name}.png") as source:
+                image = source.convert("RGBA")
+                bbox = image.getchannel("A").getbbox()
+                self.assertIsNotNone(bbox)
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+                self.assertGreaterEqual(max(width, height), 124)
+                self.assertGreaterEqual(min(bbox[0], bbox[1]), 1)
+                self.assertLessEqual(max(bbox[2], bbox[3]), 127)
+
 
 if __name__ == "__main__":
     unittest.main()

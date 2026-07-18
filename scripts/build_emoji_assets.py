@@ -38,6 +38,11 @@ EXTRA_NAMES = [
 ]
 
 ALL_NAMES = ATLAS_NAMES + EXTRA_NAMES
+REACTION_NAMES = {
+    "ranking_pendiente",
+    "ranking_aprobado",
+    "ranking_rechazado",
+}
 
 
 def chroma_to_alpha(image: Image.Image) -> Image.Image:
@@ -97,6 +102,7 @@ def square_icon(
     image: Image.Image,
     size: int = 128,
     keep_only_largest: bool = True,
+    edge_margin: int | None = None,
 ) -> Image.Image:
     if keep_only_largest:
         image = keep_largest_component(image)
@@ -105,6 +111,23 @@ def square_icon(
     if not bbox:
         raise ValueError("No se detecto ningun icono en la celda")
     trimmed = image.crop(bbox)
+    if edge_margin is not None:
+        target = size - (max(0, int(edge_margin)) * 2)
+        scale = target / max(trimmed.size)
+        resized = trimmed.resize(
+            (
+                max(1, round(trimmed.width * scale)),
+                max(1, round(trimmed.height * scale)),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+        output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        output.alpha_composite(
+            resized,
+            ((size - resized.width) // 2, (size - resized.height) // 2),
+        )
+        return output
+
     padding = max(8, round(max(trimmed.size) * 0.10))
     side = max(trimmed.size) + (padding * 2)
     square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
@@ -140,12 +163,38 @@ def build_preview(icons: list[Image.Image], destination: Path):
     preview.convert("RGB").save(destination, quality=95)
 
 
+def repack_reaction_assets(root: Path):
+    destination = root / "assets" / "discord" / "emojis"
+    for name in REACTION_NAMES:
+        path = destination / f"{name}.png"
+        icon = Image.open(path).convert("RGBA")
+        square_icon(
+            icon,
+            keep_only_largest=False,
+            edge_margin=2,
+        ).save(path, optimize=True)
+
+    icons = [
+        Image.open(destination / f"{name}.png").convert("RGBA")
+        for name in ALL_NAMES
+        if (destination / f"{name}.png").exists()
+    ]
+    build_preview(icons, destination.parent / "ranking-emojis-preview.png")
+    print(f"{len(REACTION_NAMES)} emojis de reaccion ampliados en {destination}")
+
+
 def main():
+    root = Path(__file__).resolve().parents[1]
+    if len(sys.argv) == 2 and sys.argv[1] == "--repack-reactions":
+        repack_reaction_assets(root)
+        return
+
     if len(sys.argv) != 2:
-        raise SystemExit("Uso: python scripts/build_emoji_assets.py RUTA_ATLAS.png")
+        raise SystemExit(
+            "Uso: python scripts/build_emoji_assets.py RUTA_ATLAS.png | --repack-reactions"
+        )
 
     source = Path(sys.argv[1]).resolve()
-    root = Path(__file__).resolve().parents[1]
     destination = root / "assets" / "discord" / "emojis"
     destination.mkdir(parents=True, exist_ok=True)
 
@@ -156,7 +205,10 @@ def main():
         right = round((column + 1) * atlas.width / 5)
         top = round(row * atlas.height / 3)
         bottom = round((row + 1) * atlas.height / 3)
-        icon = square_icon(chroma_to_alpha(atlas.crop((left, top, right, bottom))))
+        icon = square_icon(
+            chroma_to_alpha(atlas.crop((left, top, right, bottom))),
+            edge_margin=2 if name in REACTION_NAMES else None,
+        )
         icon.save(destination / f"{name}.png", optimize=True)
 
     icons = [

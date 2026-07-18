@@ -3,6 +3,14 @@
 La carpeta `emojis/` contiene 24 PNG transparentes listos para Discord. Todos
 ya tienen su ID predeterminado configurado en el bot.
 
+`ranking_aprobado`, `ranking_rechazado` y `ranking_pendiente` usan un margen
+especial de 2 px para verse más grandes como reacciones. Se pueden regenerar
+sin perder ese encuadre con:
+
+```bash
+python scripts/build_emoji_assets.py --repack-reactions
+```
+
 Los IDs ya estan incluidos como valores predeterminados. Estas variables son
 opcionales y sirven para reemplazarlos en otro servidor:
 
