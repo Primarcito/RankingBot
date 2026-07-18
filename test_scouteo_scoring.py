@@ -1,6 +1,7 @@
 import unittest
 
 from scouteo_scoring import (
+    calculate_scouteo_map_points,
     calculate_scouteo_records,
     calculate_scouteo_points,
     format_scouteo_summary,
@@ -63,6 +64,11 @@ class ScouteoScoringTests(unittest.TestCase):
     def test_final_points_use_half_up_rounding(self):
         self.assertEqual(calculate_scouteo_points(6, 5, 95), 29)
         self.assertEqual(calculate_scouteo_points(2, 5, 95), 10)
+
+    def test_partial_maps_are_not_discarded(self):
+        self.assertEqual(calculate_scouteo_map_points(1, 3, 5), 1)
+        self.assertEqual(calculate_scouteo_map_points(2, 3, 5), 3)
+        self.assertEqual(calculate_scouteo_map_points(3, 3, 5), 5)
 
 
 if __name__ == "__main__":

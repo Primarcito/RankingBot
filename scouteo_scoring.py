@@ -52,6 +52,22 @@ def calculate_scouteo_points(base_units: int, unit_points: int, multiplier_hundr
     return (numerator + 50) // 100
 
 
+def calculate_scouteo_map_points(
+    maps: int,
+    maps_per_unit: int,
+    unit_points: int,
+    multiplier_hundredths: int = 100,
+) -> int:
+    """Calcula puntos proporcionales sin descartar los mapas sobrantes."""
+    maps_per_unit = max(1, int(maps_per_unit))
+    gross_points = (
+        max(0, int(maps))
+        * max(0, int(unit_points))
+        // maps_per_unit
+    )
+    return calculate_scouteo_points(gross_points, 1, multiplier_hundredths)
+
+
 def format_scouteo_summary(record: dict, units: int, unit_points: int, points: int | None = None) -> str:
     hours = int(record.get("hours", 0))
     minutes = int(record.get("minutes", 0))

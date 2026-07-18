@@ -86,6 +86,39 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         self.assertEqual(self.database.get_scout("1")[5], 3)
         self.assertEqual(self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_maps"], 0)
 
+    def test_partial_maps_award_only_the_missing_proportional_points(self):
+        self.database.create_evidence_review(
+            "partial-1", "1", "Scout", "scouteo", [("1", "Scout", 0, 1)]
+        )
+        self.database.set_scouteo_contributions(
+            "partial-1", [("1", 240, 1, 4, 3, 100)]
+        )
+        preview = self.database.get_scouteo_review_rows("partial-1")[0]
+        self.assertEqual(preview["units"], 0)
+        self.assertEqual(preview["points"], 1)
+        self.database.approve_evidence("partial-1")
+        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 1)
+
+        self.database.create_evidence_review(
+            "partial-2", "1", "Scout", "scouteo", [("1", "Scout", 0, 2)]
+        )
+        self.database.set_scouteo_contributions(
+            "partial-2", [("1", 0, 1, 4, 3, 100)]
+        )
+        self.database.approve_evidence("partial-2")
+        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 3)
+
+        self.database.create_evidence_review(
+            "partial-3", "1", "Scout", "scouteo", [("1", "Scout", 1, 2)]
+        )
+        self.database.set_scouteo_contributions(
+            "partial-3", [("1", 0, 1, 4, 3, 100)]
+        )
+        self.database.approve_evidence("partial-3")
+        scout = self.database.get_scout("1")
+        self.assertEqual(scout[5], 1)
+        self.assertEqual(self.database.calc_puntos_totales(scout), 5)
+
     def test_rejected_summary_does_not_change_accumulated_balance(self):
         self.database.create_evidence_review(
             "rejected", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]

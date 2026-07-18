@@ -4,6 +4,8 @@ import unicodedata
 import json
 from datetime import datetime, timezone
 
+from scouteo_scoring import calculate_scouteo_map_points
+
 DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "scouts.db")
@@ -130,6 +132,7 @@ def init_db():
                 user_id TEXT,
                 minutes INTEGER DEFAULT 0,
                 maps INTEGER DEFAULT 0,
+                credited_points INTEGER DEFAULT 0,
                 PRIMARY KEY (scope, user_id)
             )
         """)
@@ -186,6 +189,13 @@ def init_db():
             c.execute("ALTER TABLE evidence_participants ADD COLUMN cantidad INTEGER DEFAULT 1")
         if "points_override" not in participant_cols:
             c.execute("ALTER TABLE evidence_participants ADD COLUMN points_override INTEGER")
+        c.execute("PRAGMA table_info(scouteo_balances)")
+        scouteo_balance_cols = [row[1] for row in c.fetchall()]
+        if "credited_points" not in scouteo_balance_cols:
+            c.execute(
+                "ALTER TABLE scouteo_balances "
+                "ADD COLUMN credited_points INTEGER DEFAULT 0"
+            )
         # Valores por defecto de configuración
         defaults = list(DEFAULT_ACTIVITY_POINTS.items())
         c.executemany("INSERT OR IGNORE INTO config (actividad, puntos) VALUES (?, ?)", defaults)
@@ -578,26 +588,53 @@ def get_scouteo_projection(
     hours_required: int = 4,
     maps_per_unit: int = 3,
     target_snapshot_id=None,
+    points_per_unit: int = 0,
+    multiplier_hundredths: int = 100,
 ):
     scope = _scouteo_scope(target_snapshot_id)
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT minutes, maps FROM scouteo_balances WHERE scope=? AND user_id=?",
+            """
+            SELECT minutes, maps, credited_points
+            FROM scouteo_balances
+            WHERE scope=? AND user_id=?
+            """,
             (scope, str(user_id)),
         ).fetchone()
-    previous_minutes, previous_maps = row or (0, 0)
+    previous_minutes, previous_maps, previous_credited_points = row or (0, 0, 0)
     total_minutes = max(0, int(previous_minutes or 0) + int(minutes or 0))
     total_maps = max(0, int(previous_maps or 0) + int(maps or 0))
     eligible = total_minutes >= max(1, int(hours_required)) * 60
-    units = total_maps // max(1, int(maps_per_unit)) if eligible else 0
+    maps_per_unit = max(1, int(maps_per_unit))
+    units = total_maps // maps_per_unit if eligible else 0
+    remaining_maps = total_maps - (units * maps_per_unit)
+    total_points = (
+        calculate_scouteo_map_points(
+            total_maps,
+            maps_per_unit,
+            points_per_unit,
+            multiplier_hundredths,
+        )
+        if eligible else 0
+    )
+    full_unit_points = calculate_scouteo_map_points(
+        units * maps_per_unit,
+        maps_per_unit,
+        points_per_unit,
+        multiplier_hundredths,
+    )
+    credited_points = max(0, total_points - full_unit_points)
     return {
         "previous_minutes": int(previous_minutes or 0),
         "previous_maps": int(previous_maps or 0),
+        "previous_credited_points": int(previous_credited_points or 0),
         "total_minutes": total_minutes,
         "total_maps": total_maps,
         "eligible": eligible,
         "units": units,
-        "remaining_maps": total_maps - (units * max(1, int(maps_per_unit))),
+        "remaining_maps": remaining_maps,
+        "credited_points": credited_points,
+        "points": max(0, total_points - int(previous_credited_points or 0)),
     }
 
 def set_scouteo_contributions(message_id: str, contributions):
@@ -653,9 +690,11 @@ def get_scouteo_review_rows(message_id: str):
             int(hours_required or 1),
             int(maps_per_unit or 1),
             target_snapshot_id,
+            points_per_unit,
+            int(multiplier or 100),
         )
         units = projection["units"]
-        exact_points = (units * max(0, int(points_per_unit)) * int(multiplier) + 50) // 100
+        exact_points = projection["points"]
         result.append({
             "user_id": str(user_id),
             "username": username,
@@ -713,22 +752,54 @@ def _apply_scouteo_contributions(conn, message_id: str, target_snapshot_id, poin
     calculated = {}
     for user_id, minutes, maps, hours_required, maps_per_unit, multiplier in rows:
         balance = conn.execute(
-            "SELECT minutes, maps FROM scouteo_balances WHERE scope=? AND user_id=?",
+            """
+            SELECT minutes, maps, credited_points
+            FROM scouteo_balances
+            WHERE scope=? AND user_id=?
+            """,
             (scope, str(user_id)),
-        ).fetchone() or (0, 0)
+        ).fetchone() or (0, 0, 0)
         total_minutes = max(0, int(balance[0] or 0) + int(minutes or 0))
         total_maps = max(0, int(balance[1] or 0) + int(maps or 0))
         eligible = total_minutes >= max(1, int(hours_required)) * 60
-        units = total_maps // max(1, int(maps_per_unit)) if eligible else 0
-        remaining_maps = total_maps - units * max(1, int(maps_per_unit))
-        exact_points = (units * max(0, int(points_per_unit)) * int(multiplier) + 50) // 100
+        maps_per_unit = max(1, int(maps_per_unit))
+        units = total_maps // maps_per_unit if eligible else 0
+        remaining_maps = total_maps - units * maps_per_unit
+        total_points = (
+            calculate_scouteo_map_points(
+                total_maps,
+                maps_per_unit,
+                points_per_unit,
+                multiplier,
+            )
+            if eligible else 0
+        )
+        full_unit_points = calculate_scouteo_map_points(
+            units * maps_per_unit,
+            maps_per_unit,
+            points_per_unit,
+            multiplier,
+        )
+        credited_points = max(0, total_points - full_unit_points)
+        exact_points = max(0, total_points - int(balance[2] or 0))
         conn.execute(
             """
-            INSERT INTO scouteo_balances (scope, user_id, minutes, maps)
-            VALUES (?,?,?,?)
-            ON CONFLICT(scope, user_id) DO UPDATE SET minutes=excluded.minutes, maps=excluded.maps
+            INSERT INTO scouteo_balances (
+                scope, user_id, minutes, maps, credited_points
+            )
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(scope, user_id) DO UPDATE SET
+                minutes=excluded.minutes,
+                maps=excluded.maps,
+                credited_points=excluded.credited_points
             """,
-            (scope, str(user_id), total_minutes, remaining_maps),
+            (
+                scope,
+                str(user_id),
+                total_minutes,
+                remaining_maps,
+                credited_points,
+            ),
         )
         conn.execute(
             "UPDATE evidence_participants SET cantidad=?, points_override=? WHERE message_id=? AND user_id=?",
@@ -770,7 +841,7 @@ def approve_evidence(message_id: str):
             else:
                 cantidad = max(1, int(cantidad or 1))
             exact_points = int(points_override) if points_override is not None else puntos * cantidad
-            if cantidad == 0:
+            if cantidad == 0 and exact_points == 0:
                 continue
             if target_snapshot_id:
                 _apply_snapshot_activity(
@@ -867,7 +938,7 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
         total_points = 0
         for participant_id, username, cantidad, points_override in participants:
             participant_id = str(participant_id)
-            cantidad = max(1, int(cantidad or 1))
+            cantidad = max(0, int(cantidad or 0))
             exact_points = int(points_override) if points_override is not None else points_unit * cantidad
             evidence_adjustment = exact_points - (points_unit * cantidad)
             current_row = conn.execute(
@@ -884,7 +955,7 @@ def move_evidence_to_snapshot(message_id: str, snapshot_id: int):
                     "UPDATE scouts SET points_adjustment = points_adjustment - ? WHERE user_id=?",
                     (evidence_adjustment, participant_id),
                 )
-            if removed_units:
+            if removed_units or exact_points:
                 conn.execute(
                     "INSERT INTO logs (user_id, username, actividad, cantidad, puntos, fecha, accion) VALUES (?,?,?,?,?,?,?)",
                     (
@@ -948,7 +1019,7 @@ def _apply_snapshot_activity(
     if actividad not in ACTIVITY_COLUMNS:
         raise ValueError(f"Actividad no valida para cierre: {actividad}")
 
-    cantidad = max(1, int(cantidad or 1))
+    cantidad = max(0, int(cantidad or 0))
     delta_points = int(points_override) if points_override is not None else int(puntos_unit or 0) * cantidad
     row = conn.execute(
         """

@@ -97,6 +97,7 @@ from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_
 import participants as participant_tools
 import mapping_analysis
 from scouteo_scoring import (
+    calculate_scouteo_map_points,
     calculate_scouteo_records,
     calculate_scouteo_points,
     format_scouteo_summary,
@@ -848,13 +849,14 @@ async def create_scouteo_count_review(
         combined = combine_scouteo_records(item["records"])
         incoming_minutes = sum((int(record["hours"]) * 60) + int(record["minutes"]) for record in item["records"])
         incoming_maps = sum(int(record["maps"]) for record in item["records"])
+        multiplier = min(int(record.get("multiplier_hundredths", 100)) for record in item["records"])
         projection = get_scouteo_projection(
             item["user_id"], incoming_minutes, incoming_maps,
             hours_per_point, maps_per_point, target_snapshot_id,
+            unit_points, multiplier,
         )
         units = projection["units"]
-        multiplier = min(int(record.get("multiplier_hundredths", 100)) for record in item["records"])
-        points = calculate_scouteo_points(units, unit_points, multiplier)
+        points = projection["points"]
         combined.update({
             "total": units,
             "base_total": units,
@@ -1355,11 +1357,13 @@ def build_scouteo_count_embed(
 ):
     unit_points = get_puntos("scouteo")
     total_points = sum(
-        calculate_scouteo_points(
-            record["total"],
+        calculate_scouteo_map_points(
+            record["maps"],
+            maps_per_point,
             unit_points,
             record.get("multiplier_hundredths", 100),
         )
+        if record.get("eligible_by_hours") else 0
         for record in records
     )
     embed = discord.Embed(
@@ -1375,7 +1379,7 @@ def build_scouteo_count_embed(
     )
     embed.add_field(
         name="Preview",
-        value=format_scouteo_count_table(records, unit_points),
+        value=format_scouteo_count_table(records, unit_points, maps_per_point),
         inline=False,
     )
     if is_late_closure:
@@ -1387,7 +1391,11 @@ def build_scouteo_count_embed(
     return embed
 
 
-def format_scouteo_count_table(records: list[dict], unit_points: int):
+def format_scouteo_count_table(
+    records: list[dict],
+    unit_points: int,
+    maps_per_point: int,
+):
     if not records:
         return "Sin puntos calculados."
 
@@ -1403,9 +1411,15 @@ def format_scouteo_count_table(records: list[dict], unit_points: int):
         map_points = str(record["map_points"]).rjust(3)
         multiplier = f"{record.get('multiplier_hundredths', 100) / 100:.2f}".rjust(4)
         total = str(record["total"]).rjust(2)
-        points = str(calculate_scouteo_points(
-            record["total"], unit_points, record.get("multiplier_hundredths", 100)
-        )).rjust(3)
+        points = str(
+            calculate_scouteo_map_points(
+                record["maps"],
+                maps_per_point,
+                unit_points,
+                record.get("multiplier_hundredths", 100),
+            )
+            if record.get("eligible_by_hours") else 0
+        ).rjust(3)
         lines.append(f"{name} {time_text} {maps} {hour_points} {map_points} {multiplier} {total} {points}")
 
     if len(records) > 12:
