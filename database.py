@@ -118,13 +118,35 @@ def init_db():
                 target_type TEXT,
                 target_id TEXT,
                 summary TEXT,
-                details_json TEXT
+                details_json TEXT,
+                dm_notified_at TEXT
             )
         """)
         c.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
             ON audit_events(created_at DESC)
         """)
+        c.execute("PRAGMA table_info(audit_events)")
+        audit_cols = [row[1] for row in c.fetchall()]
+        if "dm_notified_at" not in audit_cols:
+            c.execute("ALTER TABLE audit_events ADD COLUMN dm_notified_at TEXT")
+        audit_dm_marker = "__audit_dm_notifications_v1"
+        marker = c.execute(
+            "SELECT value FROM bot_state WHERE key=?",
+            (audit_dm_marker,),
+        ).fetchone()
+        if not marker:
+            c.execute(
+                """
+                UPDATE audit_events
+                SET dm_notified_at='legacy'
+                WHERE dm_notified_at IS NULL
+                """
+            )
+            c.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                (audit_dm_marker, utc_now_iso()),
+            )
         c.execute("""
             CREATE TABLE IF NOT EXISTS scouteo_balances (
                 scope TEXT,
@@ -603,6 +625,53 @@ def get_audit_events(limit: int | None = 500, category: str | None = None):
             "details": details,
         })
     return events
+
+def get_pending_audit_dm_events(limit: int = 25):
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, created_at, category, action, actor_id, actor_name,
+                   target_type, target_id, summary, details_json
+            FROM audit_events
+            WHERE dm_notified_at IS NULL
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+
+    events = []
+    for row in rows:
+        try:
+            details = json.loads(row[9] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            details = {"raw": row[9]}
+        events.append({
+            "id": int(row[0]),
+            "created_at": row[1],
+            "category": row[2],
+            "action": row[3],
+            "actor_id": row[4],
+            "actor_name": row[5],
+            "target_type": row[6],
+            "target_id": row[7],
+            "summary": row[8] or "",
+            "details": details,
+        })
+    return events
+
+def mark_audit_dm_notified(event_id: int) -> bool:
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE audit_events
+            SET dm_notified_at=?
+            WHERE id=? AND dm_notified_at IS NULL
+            """,
+            (utc_now_iso(), int(event_id)),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
 
 def get_evidence_summary(message_id: str):
     with get_conn() as conn:

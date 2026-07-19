@@ -26,6 +26,7 @@ from database import (
     create_ranking_snapshot,
     create_evidence_review,
     get_audit_events,
+    get_pending_audit_dm_events,
     get_evidence_by_thread,
     get_evidence_summary,
     get_evidence_participants as db_get_evidence_participants,
@@ -51,6 +52,7 @@ from database import (
     init_db,
     move_evidence_to_snapshot,
     mark_evidence_review_alerted,
+    mark_audit_dm_notified,
     remove_scout_alias,
     record_audit_event,
     reset_all,
@@ -66,7 +68,7 @@ from config import ACTIVIDADES, APPLICATION_ID, COLOR_PANEL, COLOR_PERFIL, COLOR
     DASHBOARD_CHANNEL_ID, GUILD_ID, INFO_RANKING_CHANNEL_ID, \
     WEEKLY_EXPORT_CHANNEL_ID, \
     EVIDENCE_CATEGORY, EVIDENCE_CATEGORY_ID, EVIDENCE_CATEGORY_IDS, EVIDENCE_CHANNEL_IDS, \
-    EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
+    AUDIT_DM_USER_ID, EVIDENCE_CHANNELS, EVIDENCE_REVIEW_CHANNEL_ID, IMAGE_EXTENSIONS, LOG_CHANNEL_ID, \
     AUTO_RESET_ENABLED, AUTO_RESET_HOUR_UTC, AUTO_RESET_MINUTE_UTC, AUTO_RESET_WEEKDAY_UTC, \
     DEFAULT_PRIORITY_MIN_POINTS, GM_ROLE_IDS, PRIORITY_PROTECTED_ROLE_IDS, PRIORITY_ROLE_ID, \
     REVIEWER_ROLE_IDS
@@ -96,7 +98,12 @@ from permissions import (
     is_gm_member,
 )
 from emojis import button_emoji, reaction_emoji, reaction_variants, text_emoji
-from audit_log import audit_action_label, build_audit_markdown
+from audit_log import (
+    audit_action_label,
+    audit_event_risk,
+    build_audit_markdown,
+    format_audit_dm_line,
+)
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
 import mapping_analysis
@@ -120,6 +127,7 @@ COMMANDS_SYNCED = False
 RESET_TASK_STARTED = False
 TAUNT_TASK_STARTED = False
 PENDING_ALERT_TASK_STARTED = False
+AUDIT_DM_TASK_STARTED = False
 AURA_TAUNT_RESPONSE = "RankingBot confirma: el aura se farmea, la envidia se nota. Sube evidencia o vuelve a zona azul."
 AURA_TAUNT_TARGETS = (
     (1435778824775274581, 1514156352463700051),
@@ -210,7 +218,8 @@ class SafeModal(discord.ui.Modal):
 
 @bot.event
 async def on_ready():
-    global COMMANDS_SYNCED, RESET_TASK_STARTED, TAUNT_TASK_STARTED, PENDING_ALERT_TASK_STARTED
+    global COMMANDS_SYNCED, RESET_TASK_STARTED, TAUNT_TASK_STARTED
+    global PENDING_ALERT_TASK_STARTED, AUDIT_DM_TASK_STARTED
     init_db()
     migrate_scouteo_accumulation_settings()
     bot.add_view(DashboardView())
@@ -242,6 +251,10 @@ async def on_ready():
     if not PENDING_ALERT_TASK_STARTED:
         bot.loop.create_task(pending_evidence_alert_loop())
         PENDING_ALERT_TASK_STARTED = True
+
+    if not AUDIT_DM_TASK_STARTED:
+        bot.loop.create_task(audit_dm_notification_loop())
+        AUDIT_DM_TASK_STARTED = True
 
 # ── /panel_scouts ─────────────────────────────────────────────────────────────
 
@@ -574,6 +587,53 @@ async def pending_evidence_alert_loop():
         except Exception as err:
             print(f"[PENDING ALERT ERROR] {err}")
         await asyncio.sleep(300)
+
+
+AUDIT_DM_COLORS = {
+    "low": 0x3FAE62,
+    "medium": 0xE58B2A,
+    "high": 0xD94A4A,
+}
+
+
+async def send_pending_audit_dms():
+    if not str(AUDIT_DM_USER_ID).isdigit():
+        print("[AUDIT DM] El ID configurado no es valido.")
+        return
+    try:
+        recipient = (
+            bot.get_user(int(AUDIT_DM_USER_ID))
+            or await bot.fetch_user(int(AUDIT_DM_USER_ID))
+        )
+    except discord.HTTPException as err:
+        print(f"[AUDIT DM] No pude encontrar al destinatario: {err}")
+        return
+
+    for event in get_pending_audit_dm_events(limit=25):
+        risk = audit_event_risk(event)
+        embed = discord.Embed(
+            description=format_audit_dm_line(event),
+            color=AUDIT_DM_COLORS[risk],
+        )
+        try:
+            await recipient.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            mark_audit_dm_notified(event["id"])
+        except (discord.Forbidden, discord.HTTPException) as err:
+            print(f"[AUDIT DM] Evento {event['id']}: {err}")
+            break
+
+
+async def audit_dm_notification_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await send_pending_audit_dms()
+        except Exception as err:
+            print(f"[AUDIT DM ERROR] {err}")
+        await asyncio.sleep(10)
 
 
 def should_reply_to_aura_taunt(text: str):

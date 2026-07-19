@@ -90,6 +90,57 @@ def _target_text(event: dict) -> str:
     return target_type or (f"`{target_id}`" if target_id else "General")
 
 
+AUDIT_HIGH_RISK_ACTIONS = {
+    "cierre_manual",
+    "kickear_candidatos",
+    "mover_conteo",
+    "quitar_aliases",
+    "rechazar",
+    "rechazar_analisis",
+    "reiniciar_checkpoint",
+    "restar",
+    "restar_masivo",
+    "reset_automatico",
+    "reset_manual",
+}
+
+AUDIT_MEDIUM_RISK_CATEGORIES = {
+    "afk",
+    "configuracion",
+    "mapeo",
+    "multiplicadores",
+    "padron",
+    "prio",
+    "puntos",
+    "scouteo",
+}
+
+
+def audit_event_risk(event: dict) -> str:
+    action = str(event.get("action") or "").casefold()
+    category = str(event.get("category") or "").casefold()
+    if action in AUDIT_HIGH_RISK_ACTIONS:
+        return "high"
+    if category in AUDIT_MEDIUM_RISK_CATEGORIES:
+        return "medium"
+    return "low"
+
+
+def format_audit_dm_line(event: dict) -> str:
+    risk_icon = {"low": "🟢", "medium": "🟠", "high": "🔴"}[audit_event_risk(event)]
+    actor_id = _clean(event.get("actor_id"))
+    actor = _clean(event.get("actor_name")) or "Sistema"
+    if actor_id:
+        actor = f"{actor} <@{actor_id}>"
+    action = audit_action_label(event.get("action"))
+    target = _target_text(event)
+    summary = _clean(event.get("summary"))
+    parts = [risk_icon, action, actor, target]
+    if summary:
+        parts.append(summary)
+    return " · ".join(parts)[:1000]
+
+
 def build_audit_markdown(events: list[dict], generated_at=None) -> str:
     generated_at = generated_at or datetime.now(timezone.utc)
     lines = [

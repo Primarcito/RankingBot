@@ -6,7 +6,7 @@ import unittest
 import warnings
 from datetime import datetime, timezone
 
-from audit_log import build_audit_markdown
+from audit_log import audit_event_risk, build_audit_markdown, format_audit_dm_line
 
 
 class AuditLogTests(unittest.TestCase):
@@ -72,6 +72,37 @@ class AuditLogTests(unittest.TestCase):
         self.assertIn("Officer (`10`)", content)
         self.assertIn("evidencia `100`", content)
         self.assertIn("**Despues:** `0.95`", content)
+
+    def test_new_events_queue_for_dm_and_are_marked_once(self):
+        event_id = self.database.record_audit_event(
+            "puntos",
+            "restar",
+            "10",
+            "Officer",
+            "scout",
+            "20",
+            "Resto 5 puntos.",
+        )
+        queued = self.database.get_pending_audit_dm_events()
+        self.assertEqual([event["id"] for event in queued], [event_id])
+        self.assertTrue(self.database.mark_audit_dm_notified(event_id))
+        self.assertEqual(self.database.get_pending_audit_dm_events(), [])
+
+    def test_dm_line_is_single_line_and_risk_colored(self):
+        event = {
+            "category": "puntos",
+            "action": "restar",
+            "actor_id": "10",
+            "actor_name": "Officer",
+            "target_type": "scout",
+            "target_id": "20",
+            "summary": "Resto puntos\npor auditoria.",
+        }
+        self.assertEqual(audit_event_risk(event), "high")
+        line = format_audit_dm_line(event)
+        self.assertTrue(line.startswith("🔴"))
+        self.assertIn("Officer <@10>", line)
+        self.assertNotIn("\n", line)
 
 
 if __name__ == "__main__":
