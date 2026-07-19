@@ -1675,6 +1675,7 @@ class ScouteoCountView(SafeView):
         if not can_review_member(interaction.user):
             await interaction.response.send_message("No tienes permiso para enviar este conteo.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         set_scouteo_count_settings(self.hours_per_point, self.maps_per_point)
         created = await create_scouteo_count_review(
             self.source_message,
@@ -1685,7 +1686,10 @@ class ScouteoCountView(SafeView):
             self.target_label,
         )
         if not created:
-            await interaction.response.send_message("No se pudo crear la revision. Puede que ya exista o no haya puntos.", ephemeral=True)
+            await interaction.followup.send(
+                "No se pudo crear la revisión. Puede que ya exista o no haya puntos.",
+                ephemeral=True,
+            )
             return
 
         record_interaction_audit(
@@ -1703,6 +1707,10 @@ class ScouteoCountView(SafeView):
                 "horas_minimas": self.hours_per_point,
                 "mapas_por_unidad": self.maps_per_point,
             },
+        )
+        await interaction.followup.send(
+            f"Revisión creada en <#{EVIDENCE_REVIEW_CHANNEL_ID}>.",
+            ephemeral=True,
         )
         for item in self.children:
             item.disabled = True

@@ -139,6 +139,13 @@ class HierarchyDashboardTests(unittest.TestCase):
         self.assertNotIn("5 horas", content)
         self.assertNotIn("ID de evidencia", content)
 
+    def test_scouteo_review_defers_before_slow_resolution(self):
+        source = inspect.getsource(main.ScouteoCountView.send_review)
+        defer_position = source.index("interaction.response.defer")
+        create_position = source.index("create_scouteo_count_review")
+        self.assertLess(defer_position, create_position)
+        self.assertIn("interaction.followup.send", source)
+
     def test_only_summary_commands_are_registered(self):
         self.assertEqual(
             sorted(command.name for command in main.tree.get_commands()),
