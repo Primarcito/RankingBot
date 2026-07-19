@@ -132,6 +132,10 @@ def audit_event_risk(event: dict) -> str:
     category = str(event.get("category") or "").casefold()
     if action in AUDIT_HIGH_RISK_ACTIONS:
         return "high"
+    if category == "puntos" and action in AUDIT_DM_POINT_ACTIONS:
+        return "low"
+    if category == "multiplicadores":
+        return "medium"
     if category in AUDIT_MEDIUM_RISK_CATEGORIES:
         return "medium"
     return "low"
@@ -149,6 +153,9 @@ def format_audit_dm_line(event: dict) -> str:
     parts = [risk_icon, action, actor, target]
     if summary:
         parts.append(summary)
+    evidence_url = _clean((event.get("details") or {}).get("evidence_url"))
+    if evidence_url:
+        parts.append(f"[Ver evidencia]({evidence_url})")
     return " · ".join(parts)[:1000]
 
 

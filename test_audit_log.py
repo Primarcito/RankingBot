@@ -102,11 +102,18 @@ class AuditLogTests(unittest.TestCase):
             "target_type": "scout",
             "target_id": "20",
             "summary": "Resto puntos\npor auditoria.",
+            "details": {
+                "evidence_url": "https://discord.com/channels/1/2/3",
+            },
         }
         self.assertEqual(audit_event_risk(event), "high")
         line = format_audit_dm_line(event)
         self.assertTrue(line.startswith("🔴"))
         self.assertIn("Officer <@10>", line)
+        self.assertIn(
+            "[Ver evidencia](https://discord.com/channels/1/2/3)",
+            line,
+        )
         self.assertNotIn("\n", line)
 
     def test_dm_only_includes_real_ranking_changes(self):
@@ -138,6 +145,14 @@ class AuditLogTests(unittest.TestCase):
             "category": "participantes",
             "action": "agregar_a_evidencia",
         }))
+        self.assertEqual(audit_event_risk({
+            "category": "puntos",
+            "action": "sumar",
+        }), "low")
+        self.assertEqual(audit_event_risk({
+            "category": "multiplicadores",
+            "action": "ajustar",
+        }), "medium")
 
 
 if __name__ == "__main__":

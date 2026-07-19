@@ -29,6 +29,7 @@ from config import (
     COLOR_ERROR,
     COLOR_WARNING,
     DASHBOARD_CHANNEL_ID,
+    EVIDENCE_CHANNEL_IDS,
     INFO_RANKING_CHANNEL_ID,
 )
 from permissions import can_review_evidence, is_gm_member
@@ -1116,6 +1117,20 @@ class EvidenceApproveButton(discord.ui.Button):
                 awarded["activity"],
                 {"label": awarded["activity"] or "Actividad"},
             )["label"]
+            source_channel_id = next(
+                (
+                    channel_id
+                    for channel_id, activity in EVIDENCE_CHANNEL_IDS.items()
+                    if activity == awarded["activity"]
+                ),
+                None,
+            )
+            evidence_url = (
+                f"https://discord.com/channels/{interaction.guild.id}/"
+                f"{source_channel_id}/{self.evidence_message_id}"
+                if interaction.guild and source_channel_id
+                else None
+            )
             destination = (
                 f"cierre #{awarded['target_snapshot_id']}"
                 if awarded["target_snapshot_id"]
@@ -1136,6 +1151,7 @@ class EvidenceApproveButton(discord.ui.Button):
                     "participantes": awarded["participant_count"],
                     "puntos": awarded["total_points"],
                     "destino": destination,
+                    "evidence_url": evidence_url,
                 },
             )
         embed = interaction.message.embeds[0]
