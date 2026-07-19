@@ -9,6 +9,7 @@ from database import (
     get_all_config,
     get_bot_state,
     get_evidence_participants,
+    get_evidence_points_awarded,
     get_evidence_summary,
     get_puntos,
     get_scouteo_review_rows,
@@ -1109,6 +1110,34 @@ class EvidenceApproveButton(discord.ui.Button):
                 "destino_cierre": result[4],
             },
         )
+        awarded = get_evidence_points_awarded(self.evidence_message_id)
+        if awarded and awarded["total_points"] > 0:
+            activity_label = ACTIVIDADES.get(
+                awarded["activity"],
+                {"label": awarded["activity"] or "Actividad"},
+            )["label"]
+            destination = (
+                f"cierre #{awarded['target_snapshot_id']}"
+                if awarded["target_snapshot_id"]
+                else "ranking actual"
+            )
+            record_view_audit(
+                interaction,
+                "puntos",
+                "sumar",
+                target_type=destination,
+                target_id=None,
+                summary=(
+                    f"{awarded['total_points']} pts de {activity_label} para "
+                    f"{awarded['participant_count']} scout(s)."
+                ),
+                details={
+                    "actividad": awarded["activity"],
+                    "participantes": awarded["participant_count"],
+                    "puntos": awarded["total_points"],
+                    "destino": destination,
+                },
+            )
         embed = interaction.message.embeds[0]
         embed.color = COLOR_SUCCESS
         embed.add_field(name="Estado", value=f"Aprobado por {interaction.user.mention}", inline=False)

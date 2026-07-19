@@ -426,6 +426,56 @@ def get_evidence_participants_with_quantity(message_id: str):
         ).fetchall()
     return rows
 
+def get_evidence_points_awarded(message_id: str):
+    with get_conn() as conn:
+        evidence = conn.execute(
+            """
+            SELECT user_id, actividad, puntos, status, target_snapshot_id
+            FROM evidence_messages
+            WHERE message_id=?
+            """,
+            (str(message_id),),
+        ).fetchone()
+        if not evidence or evidence[3] != "approved":
+            return None
+        rows = conn.execute(
+            """
+            SELECT user_id, username, cantidad, points_override
+            FROM evidence_participants
+            WHERE message_id=?
+            """,
+            (str(message_id),),
+        ).fetchall()
+
+    owner_id, activity, unit_points, _, target_snapshot_id = evidence
+    if not rows:
+        rows = [(owner_id, owner_id, 1, None)]
+    participants = []
+    total_points = 0
+    for user_id, username, quantity, points_override in rows:
+        quantity = max(0, int(quantity or 0))
+        points = (
+            int(points_override)
+            if points_override is not None
+            else int(unit_points or 0) * quantity
+        )
+        if quantity <= 0 and points <= 0:
+            continue
+        participants.append({
+            "user_id": str(user_id),
+            "username": username or str(user_id),
+            "units": quantity,
+            "points": points,
+        })
+        total_points += points
+    return {
+        "activity": activity,
+        "participants": participants,
+        "participant_count": len(participants),
+        "total_points": total_points,
+        "target_snapshot_id": target_snapshot_id,
+    }
+
 def get_ranking_snapshot(snapshot_id: int):
     with get_conn() as conn:
         row = conn.execute(

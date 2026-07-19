@@ -37,6 +37,8 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         self.assertEqual(scout[5], 6)
         self.assertEqual(self.database.get_points_adjustment("1"), -1)
         self.assertEqual(self.database.calc_puntos_totales(scout), 29)
+        awarded = self.database.get_evidence_points_awarded("summary-1")
+        self.assertEqual(awarded["total_points"], 29)
 
         snapshot_id = self.database.create_ranking_snapshot(reason="test")
         snapshot_row = self.database.get_ranking_snapshot_rows(snapshot_id)[0]
@@ -104,6 +106,9 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         scout = self.database.get_scout("1")
         self.assertEqual(scout[5], 1)
         self.assertEqual(self.database.calc_puntos_totales(scout), 5)
+        awarded = self.database.get_evidence_points_awarded("four-hours")
+        self.assertEqual(awarded["participant_count"], 1)
+        self.assertEqual(awarded["total_points"], 5)
 
     def test_rejected_summary_does_not_change_accumulated_balance(self):
         self.database.create_evidence_review(
