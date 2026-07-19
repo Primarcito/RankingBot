@@ -100,7 +100,6 @@ from permissions import (
 from emojis import button_emoji, reaction_emoji, reaction_variants, text_emoji
 from audit_log import (
     audit_action_label,
-    audit_event_risk,
     build_audit_markdown,
     format_audit_dm_line,
     is_audit_dm_relevant,
@@ -590,13 +589,6 @@ async def pending_evidence_alert_loop():
         await asyncio.sleep(300)
 
 
-AUDIT_DM_COLORS = {
-    "low": 0x3FAE62,
-    "medium": 0xE58B2A,
-    "high": 0xD94A4A,
-}
-
-
 async def send_pending_audit_dms():
     if not str(AUDIT_DM_USER_ID).isdigit():
         print("[AUDIT DM] El ID configurado no es valido.")
@@ -614,14 +606,9 @@ async def send_pending_audit_dms():
         if not is_audit_dm_relevant(event):
             mark_audit_dm_notified(event["id"])
             continue
-        risk = audit_event_risk(event)
-        embed = discord.Embed(
-            description=format_audit_dm_line(event),
-            color=AUDIT_DM_COLORS[risk],
-        )
         try:
             await recipient.send(
-                embed=embed,
+                format_audit_dm_line(event),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             mark_audit_dm_notified(event["id"])

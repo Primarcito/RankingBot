@@ -118,9 +118,9 @@ class AuditLogTests(unittest.TestCase):
             "category": "multiplicadores",
             "action": "actualizar",
         }))
-        self.assertTrue(is_audit_dm_relevant({
-            "category": "evidencias",
-            "action": "aprobar",
+        self.assertFalse(is_audit_dm_relevant({
+            "category": "puntos",
+            "action": "restar",
         }))
         self.assertFalse(is_audit_dm_relevant({
             "category": "publicaciones",
@@ -132,7 +132,11 @@ class AuditLogTests(unittest.TestCase):
         }))
         self.assertFalse(is_audit_dm_relevant({
             "category": "evidencias",
-            "action": "crear_revision",
+            "action": "aprobar",
+        }))
+        self.assertFalse(is_audit_dm_relevant({
+            "category": "participantes",
+            "action": "agregar_a_evidencia",
         }))
 
 
