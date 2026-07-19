@@ -23,6 +23,8 @@ from database import (
     add_scout_alias,
     adjust_snapshot_activity,
     calc_puntos_totales,
+    cancel_pending_evidence,
+    cancel_pending_evidence_by_review_message,
     create_ranking_snapshot,
     create_evidence_review,
     get_audit_events,
@@ -421,6 +423,29 @@ async def on_message(message: discord.Message):
     )
     await analyzing_msg.edit(embed=done_embed)
     asyncio.create_task(delete_message_after(analyzing_msg))
+
+
+@bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    if int(payload.channel_id) != int(EVIDENCE_REVIEW_CHANNEL_ID):
+        return
+    cancelled = cancel_pending_evidence_by_review_message(str(payload.message_id))
+    if cancelled:
+        record_audit_event(
+            "evidencias",
+            "cancelar_revision_borrada",
+            actor_name="Sistema",
+            target_type="evidencia",
+            target_id=cancelled["message_id"],
+            summary=(
+                "Cancelo la revision pendiente porque su mensaje fue eliminado; "
+                "puede generarse nuevamente."
+            ),
+            details={
+                "actividad": cancelled["activity"],
+                "review_message_id": cancelled["review_message_id"],
+            },
+        )
 
 
 async def delete_message_after(message: discord.Message, delay: int = 60):
@@ -1014,6 +1039,15 @@ async def create_scouteo_count_review(
     target_snapshot_id: int | None = None,
     target_label: str = "Ranking actual",
 ):
+    existing = get_evidence_summary(str(message.id))
+    if existing and existing[4] == "pending" and existing[5]:
+        review_channel = await get_review_channel(message)
+        try:
+            await review_channel.fetch_message(int(existing[5]))
+            return False
+        except discord.NotFound:
+            cancel_pending_evidence(str(message.id))
+
     unit_points = get_puntos("scouteo")
     participant_rows_by_user = {}
     unresolved_records = []

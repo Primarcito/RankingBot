@@ -383,6 +383,49 @@ def get_evidence_review_message_id(message_id: str):
         ).fetchone()
     return row[0] if row else None
 
+def cancel_pending_evidence(message_id: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT message_id, review_message_id, actividad
+            FROM evidence_messages
+            WHERE message_id=? AND status='pending'
+            """,
+            (str(message_id),),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "DELETE FROM scouteo_contributions WHERE message_id=?",
+            (str(message_id),),
+        )
+        conn.execute(
+            "DELETE FROM evidence_participants WHERE message_id=?",
+            (str(message_id),),
+        )
+        conn.execute(
+            "DELETE FROM evidence_messages WHERE message_id=? AND status='pending'",
+            (str(message_id),),
+        )
+        conn.commit()
+    return {
+        "message_id": str(row[0]),
+        "review_message_id": str(row[1]) if row[1] else None,
+        "activity": row[2],
+    }
+
+def cancel_pending_evidence_by_review_message(review_message_id: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT message_id
+            FROM evidence_messages
+            WHERE review_message_id=? AND status='pending'
+            """,
+            (str(review_message_id),),
+        ).fetchone()
+    return cancel_pending_evidence(row[0]) if row else None
+
 def add_evidence_participants(message_id: str, participants):
     with get_conn() as conn:
         row = conn.execute(

@@ -70,6 +70,39 @@ class RecentEvidenceTests(unittest.TestCase):
         self.assertTrue(self.database.mark_evidence_review_alerted("overdue"))
         self.assertEqual(self.database.get_overdue_pending_evidence(hours=5), [])
 
+    def test_deleted_pending_review_can_be_created_again(self):
+        self.database.create_evidence_review(
+            "source-1",
+            "1",
+            "Scout Uno",
+            "scouteo",
+            [("1", "Scout Uno", 2)],
+        )
+        self.database.set_scouteo_contributions(
+            "source-1",
+            [("1", 240, 3, 4, 3, 100)],
+        )
+        self.database.set_evidence_review_message("source-1", "review-1")
+
+        cancelled = self.database.cancel_pending_evidence_by_review_message(
+            "review-1"
+        )
+        self.assertEqual(cancelled["message_id"], "source-1")
+        self.assertIsNone(self.database.get_evidence_summary("source-1"))
+        self.assertEqual(
+            self.database.get_evidence_participants("source-1"),
+            [],
+        )
+
+        recreated = self.database.create_evidence_review(
+            "source-1",
+            "1",
+            "Scout Uno",
+            "scouteo",
+            [("1", "Scout Uno", 2)],
+        )
+        self.assertGreater(recreated, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
