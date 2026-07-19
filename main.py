@@ -103,6 +103,7 @@ from audit_log import (
     audit_event_risk,
     build_audit_markdown,
     format_audit_dm_line,
+    is_audit_dm_relevant,
 )
 from ocr import improve_confidence_for_channel, is_ineligible_ocr, read_message_ocr, suggest_activity_from_ocr
 import participants as participant_tools
@@ -610,6 +611,9 @@ async def send_pending_audit_dms():
         return
 
     for event in get_pending_audit_dm_events(limit=25):
+        if not is_audit_dm_relevant(event):
+            mark_audit_dm_notified(event["id"])
+            continue
         risk = audit_event_risk(event)
         embed = discord.Embed(
             description=format_audit_dm_line(event),

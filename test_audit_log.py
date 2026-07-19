@@ -6,7 +6,12 @@ import unittest
 import warnings
 from datetime import datetime, timezone
 
-from audit_log import audit_event_risk, build_audit_markdown, format_audit_dm_line
+from audit_log import (
+    audit_event_risk,
+    build_audit_markdown,
+    format_audit_dm_line,
+    is_audit_dm_relevant,
+)
 
 
 class AuditLogTests(unittest.TestCase):
@@ -103,6 +108,32 @@ class AuditLogTests(unittest.TestCase):
         self.assertTrue(line.startswith("🔴"))
         self.assertIn("Officer <@10>", line)
         self.assertNotIn("\n", line)
+
+    def test_dm_only_includes_real_ranking_changes(self):
+        self.assertTrue(is_audit_dm_relevant({
+            "category": "puntos",
+            "action": "sumar",
+        }))
+        self.assertTrue(is_audit_dm_relevant({
+            "category": "multiplicadores",
+            "action": "actualizar",
+        }))
+        self.assertTrue(is_audit_dm_relevant({
+            "category": "evidencias",
+            "action": "aprobar",
+        }))
+        self.assertFalse(is_audit_dm_relevant({
+            "category": "publicaciones",
+            "action": "actualizar_dashboard",
+        }))
+        self.assertFalse(is_audit_dm_relevant({
+            "category": "exportaciones",
+            "action": "ranking",
+        }))
+        self.assertFalse(is_audit_dm_relevant({
+            "category": "evidencias",
+            "action": "crear_revision",
+        }))
 
 
 if __name__ == "__main__":

@@ -115,6 +115,33 @@ AUDIT_MEDIUM_RISK_CATEGORIES = {
     "scouteo",
 }
 
+AUDIT_DM_CHANGE_CATEGORIES = {
+    "afk",
+    "cierres",
+    "configuracion",
+    "mapeo",
+    "multiplicadores",
+    "padron",
+    "participantes",
+    "prio",
+    "puntos",
+    "scouteo",
+}
+
+AUDIT_DM_EVIDENCE_ACTIONS = {
+    "aprobar",
+    "mover_conteo",
+    "rechazar",
+}
+
+
+def is_audit_dm_relevant(event: dict) -> bool:
+    category = str(event.get("category") or "").casefold()
+    action = str(event.get("action") or "").casefold()
+    if category in AUDIT_DM_CHANGE_CATEGORIES:
+        return True
+    return category == "evidencias" and action in AUDIT_DM_EVIDENCE_ACTIONS
+
 
 def audit_event_risk(event: dict) -> str:
     action = str(event.get("action") or "").casefold()
