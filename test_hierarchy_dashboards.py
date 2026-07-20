@@ -135,6 +135,14 @@ class HierarchyDashboardTests(unittest.TestCase):
         self.assertNotIn("Requisito", closure_labels)
         self.assertEqual([item.label for item in main.PriorityExportView(90, "actual").children], ["XLSX", "CSV"])
 
+    def test_scout_profile_can_switch_between_current_and_last_closure(self):
+        self.assertEqual(
+            [item.label for item in main.ProfileSourceView("1", "Scout").children],
+            ["Actual", "Ultimo cierre"],
+        )
+        profile_labels = [item.label for item in main.AdminProfileView(main.SimpleProfileUser("1", "Scout")).children]
+        self.assertIn("Semana", profile_labels)
+
     def test_general_ranking_entry_keeps_pagination_controls(self):
         source = inspect.getsource(views.DashboardView.ranking)
         self.assertIn("RankingPaginationView", source)

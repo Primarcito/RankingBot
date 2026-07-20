@@ -3113,7 +3113,7 @@ class ScoutProfilePicker(discord.ui.UserSelect):
             return
         user = self.values[0]
         await interaction.response.edit_message(
-            embed=build_perfil_embed(str(user.id), user.display_name),
+            embed=build_profile_source_embed(str(user.id), user.display_name),
             view=AdminProfileView(user),
         )
 
@@ -3616,15 +3616,16 @@ async def admin_perfil(interaction: discord.Interaction, usuario: discord.Member
         await interaction.response.send_message("No tienes permiso para usar este comando.", ephemeral=True)
         return
 
-    embed = build_perfil_embed(str(usuario.id), usuario.display_name)
+    embed = build_profile_source_embed(str(usuario.id), usuario.display_name)
     await interaction.response.send_message(embed=embed, view=AdminProfileView(usuario), ephemeral=True)
 
 
 class AdminProfileView(SafeView):
-    def __init__(self, usuario: discord.Member):
+    def __init__(self, usuario: discord.Member, source: str = "actual"):
         super().__init__(timeout=300)
         self.user_id = str(usuario.id)
         self.display_name = usuario.display_name
+        self.source = normalize_priority_source(source)
 
     @discord.ui.button(
         label="Sumar",
@@ -3636,8 +3637,8 @@ class AdminProfileView(SafeView):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_message(
-            embed=build_admin_profile_action_embed(self.user_id, self.display_name, "sumar"),
-            view=AdminProfileActivityView(self.user_id, self.display_name, "sumar"),
+            embed=build_admin_profile_action_embed(self.user_id, self.display_name, "sumar", self.source),
+            view=AdminProfileActivityView(self.user_id, self.display_name, "sumar", self.source),
             ephemeral=True,
         )
 
@@ -3651,8 +3652,24 @@ class AdminProfileView(SafeView):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_message(
-            embed=build_admin_profile_action_embed(self.user_id, self.display_name, "restar"),
-            view=AdminProfileActivityView(self.user_id, self.display_name, "restar"),
+            embed=build_admin_profile_action_embed(self.user_id, self.display_name, "restar", self.source),
+            view=AdminProfileActivityView(self.user_id, self.display_name, "restar", self.source),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Semana",
+        emoji=button_emoji("CALENDAR"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def choose_week(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('CALENDAR')} Fuente de puntos",
+                description="Elige que semana quieres editar.",
+                color=COLOR_PANEL,
+            ),
+            view=ProfileSourceView(self.user_id, self.display_name),
             ephemeral=True,
         )
 
@@ -3666,23 +3683,48 @@ class AdminProfileView(SafeView):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.edit_message(
-            embed=build_perfil_embed(self.user_id, self.display_name),
+            embed=build_profile_source_embed(self.user_id, self.display_name, self.source),
             view=self,
         )
 
+class ProfileSourceView(SafeView):
+    def __init__(self, user_id: str, display_name: str):
+        super().__init__(timeout=180)
+        self.user_id = str(user_id)
+        self.display_name = display_name
+
+    async def open_source(self, interaction: discord.Interaction, source: str):
+        if source == "ultimo_cierre" and not get_latest_ranking_snapshot():
+            await interaction.response.send_message("Aun no hay cierre semanal guardado.", ephemeral=True)
+            return
+        user = SimpleProfileUser(self.user_id, self.display_name)
+        await interaction.response.edit_message(
+            embed=build_profile_source_embed(self.user_id, self.display_name, source),
+            view=AdminProfileView(user, source),
+        )
+
+    @discord.ui.button(label="Actual", emoji=button_emoji("REFRESH"), style=discord.ButtonStyle.primary)
+    async def current(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.open_source(interaction, "actual")
+
+    @discord.ui.button(label="Ultimo cierre", emoji=button_emoji("CALENDAR"), style=discord.ButtonStyle.secondary)
+    async def closure(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.open_source(interaction, "ultimo_cierre")
+
 
 class AdminProfileActivityView(SafeView):
-    def __init__(self, user_id: str, display_name: str, action: str):
+    def __init__(self, user_id: str, display_name: str, action: str, source: str = "actual"):
         super().__init__(timeout=180)
         self.user_id = str(user_id)
         self.display_name = display_name
         self.action = action
+        self.source = normalize_priority_source(source)
         for key, meta in ACTIVIDADES.items():
-            self.add_item(AdminProfileActivityButton(self.user_id, self.display_name, self.action, key, meta))
+            self.add_item(AdminProfileActivityButton(self.user_id, self.display_name, self.action, key, meta, self.source))
 
 
 class AdminProfileActivityButton(discord.ui.Button):
-    def __init__(self, user_id: str, display_name: str, action: str, actividad_key: str, meta: dict):
+    def __init__(self, user_id: str, display_name: str, action: str, actividad_key: str, meta: dict, source: str = "actual"):
         super().__init__(
             label=meta["label"],
             emoji=meta["emoji"],
@@ -3692,13 +3734,14 @@ class AdminProfileActivityButton(discord.ui.Button):
         self.display_name = display_name
         self.action = action
         self.actividad_key = actividad_key
+        self.source = normalize_priority_source(source)
 
     async def callback(self, interaction: discord.Interaction):
         if not is_admin(interaction):
             await interaction.response.send_message("No tienes permiso.", ephemeral=True)
             return
         await interaction.response.send_modal(
-            AdminProfilePointsModal(self.user_id, self.display_name, self.action, self.actividad_key)
+            AdminProfilePointsModal(self.user_id, self.display_name, self.action, self.actividad_key, self.source)
         )
 
 
@@ -3712,11 +3755,12 @@ class AdminProfilePointsModal(SafeModal):
         max_length=120,
     )
 
-    def __init__(self, user_id: str, display_name: str, action: str, actividad_key: str):
+    def __init__(self, user_id: str, display_name: str, action: str, actividad_key: str, source: str = "actual"):
         self.user_id = str(user_id)
         self.display_name = display_name
         self.action = action
         self.actividad_key = actividad_key
+        self.source = normalize_priority_source(source)
         meta = ACTIVIDADES[actividad_key]
         verb = "Sumar" if action == "sumar" else "Restar"
         super().__init__(title=f"{verb} puntos · {meta['label']}")
@@ -3735,14 +3779,36 @@ class AdminProfilePointsModal(SafeModal):
             await interaction.response.send_message(error, ephemeral=True)
             return
 
-        if self.action == "sumar":
+        snapshot = get_latest_ranking_snapshot() if self.source == "ultimo_cierre" else None
+        if self.source == "ultimo_cierre" and not snapshot:
+            await interaction.response.send_message("Aun no hay cierre semanal guardado.", ephemeral=True)
+            return
+
+        if self.source == "ultimo_cierre":
+            signed_units = units if self.action == "sumar" else -units
+            result = adjust_snapshot_activity(
+                int(snapshot[0]), self.user_id, self.display_name, self.actividad_key, signed_units,
+            )
+            if not result.get("ok"):
+                await interaction.response.send_message(
+                    f"No pude ajustar ese cierre: {snapshot_adjust_error_text(result)}.", ephemeral=True,
+                )
+                return
+            changed_points = result["points"]
+            units = result["applied_units"]
+            color = COLOR_SUCCESS if self.action == "sumar" else COLOR_ERROR
+            sign = "+" if self.action == "sumar" else "-"
+            source_label = f"Ultimo cierre semanal #{snapshot[0]} ({snapshot[3]})"
+        elif self.action == "sumar":
             changed_points = add_activity(self.user_id, self.display_name, self.actividad_key, units)
             color = COLOR_SUCCESS
             sign = "+"
+            source_label = "Ranking actual"
         else:
             changed_points = subtract_activity(self.user_id, self.display_name, self.actividad_key, units)
             color = COLOR_ERROR
             sign = "-"
+            source_label = "Ranking actual"
 
         record_interaction_audit(
             interaction,
@@ -3760,11 +3826,12 @@ class AdminProfilePointsModal(SafeModal):
                 "puntos_solicitados": requested_points,
                 "puntos_aplicados": changed_points,
                 "motivo": str(self.motivo.value or ""),
-                "destino": "ranking_actual",
+                "destino": source_label,
             },
         )
-        await publish_or_update_dashboard()
-        await publish_or_update_info_ranking()
+        if self.source == "actual":
+            await publish_or_update_dashboard()
+            await publish_or_update_info_ranking()
         embed = build_admin_profile_adjustment_embed(
             self.user_id,
             self.display_name,
@@ -3776,10 +3843,11 @@ class AdminProfilePointsModal(SafeModal):
             sign,
             color,
             str(self.motivo.value or ""),
+            source_label,
         )
         await interaction.response.send_message(
             embed=embed,
-            view=AdminProfileView(SimpleProfileUser(self.user_id, self.display_name)),
+            view=AdminProfileView(SimpleProfileUser(self.user_id, self.display_name), self.source),
             ephemeral=True,
         )
 
@@ -3790,11 +3858,43 @@ class SimpleProfileUser:
         self.display_name = display_name
 
 
-def build_admin_profile_action_embed(user_id: str, display_name: str, action: str):
+def build_profile_source_embed(user_id: str, display_name: str, source: str = "actual"):
+    source = normalize_priority_source(source)
+    if source == "actual":
+        embed = build_perfil_embed(user_id, display_name)
+        embed.description = (embed.description or "") + "\n\nFuente: **Ranking actual**"
+        return embed
+
+    source_data = get_priority_source(source)
+    snapshot = source_data["snapshot"]
+    row = next((item for item in source_data["rows"] if str(item[0]) == str(user_id)), None)
+    embed = discord.Embed(
+        title=f"{text_emoji('SCOUT')} Perfil de Ranking · {display_name}",
+        description=f"Fuente: **{source_data['label']}**",
+        color=COLOR_PERFIL,
+    )
+    if not row:
+        embed.add_field(name="Sin actividad", value="Este scout no figura en ese cierre.", inline=False)
+        return embed
+    activity_lines = [
+        f"{ACTIVIDADES[key]['emoji']} {ACTIVIDADES[key]['label']}: **{int(row[index + 2] or 0)}**"
+        for index, key in enumerate(ACTIVIDADES)
+    ]
+    embed.add_field(name="Actividades", value="\n".join(activity_lines), inline=False)
+    embed.add_field(name="Puntos", value=f"**{int(row[7] or 0)} pts**", inline=True)
+    embed.add_field(name="Cierre", value=f"#{snapshot[0]}", inline=True)
+    return embed
+
+
+def build_admin_profile_action_embed(user_id: str, display_name: str, action: str, source: str = "actual"):
     verb = "sumar" if action == "sumar" else "restar"
     embed = discord.Embed(
         title=f"{text_emoji('POINTS')} Elegir actividad para {verb}",
-        description=f"Scout: <@{user_id}>\nElige la actividad que quieres {verb}.",
+        description=(
+            f"Scout: <@{user_id}>\n"
+            f"Fuente: **{get_priority_source(source)['label']}**\n"
+            f"Elige la actividad que quieres {verb}."
+        ),
         color=COLOR_SUCCESS if action == "sumar" else COLOR_ERROR,
     )
     return embed
@@ -3811,6 +3911,7 @@ def build_admin_profile_adjustment_embed(
     sign: str,
     color: int,
     motivo: str,
+    source_label: str = "Ranking actual",
 ):
     meta = ACTIVIDADES[actividad_key]
     embed = discord.Embed(
@@ -3819,6 +3920,7 @@ def build_admin_profile_adjustment_embed(
             f"Scout: <@{user_id}>\n"
             f"{meta['emoji']} **{meta['label']}**\n"
             f"Accion: **{action}**\n"
+            f"Fuente: **{source_label}**\n"
             f"Cantidad: `{units}` unidades = `{requested_points}` pts solicitados\n"
             f"Puntos aplicados: `{sign}{changed_points}`"
         ),
