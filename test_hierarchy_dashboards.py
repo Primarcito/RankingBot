@@ -119,7 +119,7 @@ class HierarchyDashboardTests(unittest.TestCase):
             ["Actual XLSX", "Actual CSV", "Cierre XLSX", "Cierre CSV"],
         )
 
-    def test_prio_source_selector_keeps_closure_read_only(self):
+    def test_prio_source_selector_keeps_closure_actionable(self):
         self.assertEqual(
             [item.label for item in main.PrioritySourceSelectView().children],
             ["Prio actual", "Ultimo cierre"],
@@ -128,12 +128,9 @@ class HierarchyDashboardTests(unittest.TestCase):
             "Aplicar",
             [item.label for item in main.PrioDashboardView(source="actual").children],
         )
-        closure_labels = [
-            item.label
-            for item in main.PrioDashboardView(source="ultimo_cierre").children
-        ]
-        self.assertNotIn("Aplicar", closure_labels)
-        self.assertNotIn("Corte", closure_labels)
+        closure_labels = [item.label for item in main.PrioDashboardView(source="ultimo_cierre").children]
+        self.assertIn("Aplicar", closure_labels)
+        self.assertIn("Corte", closure_labels)
 
     def test_general_ranking_entry_keeps_pagination_controls(self):
         source = inspect.getsource(views.DashboardView.ranking)

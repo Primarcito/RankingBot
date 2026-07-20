@@ -5738,16 +5738,9 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
     embed.add_field(name="Califican por ranking", value=str(len(candidates)), inline=True)
     embed.add_field(name="Staff/GM protegidos", value=str(len(protected)), inline=True)
     embed.add_field(name="Prio final", value=str(len(rows)), inline=True)
-    if source_data["source"] == "actual":
-        embed.add_field(name="Tienen rol ahora", value=str(len(current_role_members)), inline=True)
-        embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
-        embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
-    else:
-        embed.add_field(
-            name="Modo",
-            value="Consulta del cierre: no modifica roles ni corte.",
-            inline=False,
-        )
+    embed.add_field(name="Tienen rol ahora", value=str(len(current_role_members)), inline=True)
+    embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
+    embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
     embed.add_field(
         name="Vista previa",
         value="\n".join(preview) if preview else "Nadie alcanza el corte y no hay Staff/GM visibles.",
@@ -6102,10 +6095,6 @@ class PrioDashboardView(SafeView):
         super().__init__(timeout=600)
         self.minimo = max(0, int(DEFAULT_PRIORITY_MIN_POINTS if minimo is None else minimo))
         self.source = normalize_priority_source(source)
-        if self.source == "ultimo_cierre":
-            for item in list(self.children):
-                if item.label in {"Corte", "Aplicar"}:
-                    self.remove_item(item)
 
     @discord.ui.button(
         label="Actualizar",
