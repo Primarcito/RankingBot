@@ -133,6 +133,8 @@ class HierarchyDashboardTests(unittest.TestCase):
         self.assertIn("Corte", closure_labels)
         self.assertIn("Exportar", closure_labels)
         self.assertNotIn("Requisito", closure_labels)
+        self.assertIn("Anterior", closure_labels)
+        self.assertIn("Siguiente", closure_labels)
         self.assertEqual([item.label for item in main.PriorityExportView(90, "actual").children], ["XLSX", "CSV"])
 
     def test_scout_profile_can_switch_between_current_and_last_closure(self):

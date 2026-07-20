@@ -5801,7 +5801,13 @@ def build_priority_decision_embed(
     return embed
 
 
-def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, minimo: int, source: str = "actual"):
+def build_priority_dashboard_embed(
+    guild: discord.Guild,
+    role: discord.Role,
+    minimo: int,
+    source: str = "actual",
+    page: int = 0,
+):
     source_data = get_priority_source(source)
     ranking_rows = source_data["rows"]
     candidates = build_priority_candidates(minimo, ranking_rows)
@@ -5823,9 +5829,14 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
         if not is_discord_user_id(item["user_id"])
     ]
 
+    preview_per_page = 12
+    total_pages = max(1, (len(rows) + preview_per_page - 1) // preview_per_page)
+    page = max(0, min(int(page or 0), total_pages - 1))
+    start_index = page * preview_per_page
+    page_rows = rows[start_index:start_index + preview_per_page]
     preview = [
         f"`#{index}` {format_priority_user(item)} - **{item['points']} pts** ({item['motivo']})"
-        for index, item in enumerate(rows[:12], start=1)
+        for index, item in enumerate(page_rows, start=start_index + 1)
     ]
 
     embed = discord.Embed(
@@ -5844,7 +5855,7 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
     embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
     embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
     embed.add_field(
-        name="Vista previa",
+        name=f"Vista previa · {page + 1}/{total_pages}",
         value="\n".join(preview) if preview else "Nadie alcanza el corte y no hay Staff/GM visibles.",
         inline=False,
     )
@@ -6257,10 +6268,12 @@ class PriorityExportView(SafeView):
 
 
 class PrioDashboardView(SafeView):
-    def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS, source: str = "actual"):
+    def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS, source: str = "actual", page: int = 0):
         super().__init__(timeout=600)
         self.minimo = max(0, int(DEFAULT_PRIORITY_MIN_POINTS if minimo is None else minimo))
         self.source = normalize_priority_source(source)
+        self.page = max(0, int(page or 0))
+        self.previous.disabled = self.page == 0
 
     @discord.ui.button(
         label="Actualizar",
@@ -6276,9 +6289,41 @@ class PrioDashboardView(SafeView):
             await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
             return
         await interaction.response.edit_message(
-            embed=build_priority_dashboard_embed(interaction.guild, role, self.minimo, self.source),
+            embed=build_priority_dashboard_embed(interaction.guild, role, self.minimo, self.source, self.page),
             view=self,
         )
+
+    async def change_page(self, interaction: discord.Interaction, page: int):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        role = get_priority_role(interaction)
+        if not role:
+            await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
+            return
+        source_data = get_priority_source(self.source)
+        rows = build_priority_export_rows(
+            self.minimo,
+            get_priority_protected_members(interaction.guild),
+            source_data["rows"],
+        )
+        total_pages = max(1, (len(rows) + 11) // 12)
+        page = max(0, min(int(page), total_pages - 1))
+        view = PrioDashboardView(self.minimo, self.source, page)
+        view.previous.disabled = page == 0
+        view.next.disabled = page >= total_pages - 1
+        await interaction.response.edit_message(
+            embed=build_priority_dashboard_embed(interaction.guild, role, self.minimo, self.source, page),
+            view=view,
+        )
+
+    @discord.ui.button(label="Anterior", style=discord.ButtonStyle.secondary, row=1)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.change_page(interaction, self.page - 1)
+
+    @discord.ui.button(label="Siguiente", style=discord.ButtonStyle.secondary, row=1)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.change_page(interaction, self.page + 1)
 
     @discord.ui.button(
         label="Corte",
