@@ -3290,16 +3290,71 @@ class HubPriorityButton(discord.ui.Button):
         if not is_gm_member(interaction.user):
             await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
+        await interaction.response.send_message(
+            embed=build_priority_source_embed(),
+            view=PrioritySourceSelectView(),
+            ephemeral=True,
+        )
+
+
+def build_priority_source_embed():
+    latest = get_latest_ranking_snapshot()
+    closure_text = (
+        f"Cierre #{latest[0]} · {latest[3]}"
+        if latest else
+        "No hay un cierre semanal guardado"
+    )
+    return discord.Embed(
+        title=f"{text_emoji('PRIO')} Prio",
+        description=(
+            "Elige la fuente que quieres revisar.\n"
+            f"Actual: ranking en curso\n"
+            f"Ultimo cierre: {closure_text}"
+        ),
+        color=COLOR_RANKING,
+    )
+
+
+class PrioritySourceSelectView(SafeView):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    async def open_source(self, interaction: discord.Interaction, source: str):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
         role = get_priority_role(interaction)
         if not role:
             await interaction.response.send_message(f"No encontre el rol prio `{PRIORITY_ROLE_ID}`.", ephemeral=True)
             return
+        source_data = get_priority_source(source)
+        if source == "ultimo_cierre" and not source_data["snapshot"]:
+            await interaction.response.send_message(
+                "No hay un cierre semanal guardado para revisar.",
+                ephemeral=True,
+            )
+            return
         cutoff = get_priority_min_points()
-        await interaction.response.send_message(
-            embed=build_priority_dashboard_embed(interaction.guild, role, cutoff, "actual"),
-            view=PrioDashboardView(cutoff, "actual"),
-            ephemeral=True,
+        await interaction.response.edit_message(
+            embed=build_priority_dashboard_embed(interaction.guild, role, cutoff, source),
+            view=PrioDashboardView(cutoff, source),
         )
+
+    @discord.ui.button(
+        label="Prio actual",
+        emoji=button_emoji("PRIO"),
+        style=discord.ButtonStyle.primary,
+    )
+    async def current(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.open_source(interaction, "actual")
+
+    @discord.ui.button(
+        label="Ultimo cierre",
+        emoji=button_emoji("CALENDAR"),
+        style=discord.ButtonStyle.secondary,
+    )
+    async def latest_closure(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.open_source(interaction, "ultimo_cierre")
 
 
 class HubSettingsButton(discord.ui.Button):
@@ -5683,9 +5738,16 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
     embed.add_field(name="Califican por ranking", value=str(len(candidates)), inline=True)
     embed.add_field(name="Staff/GM protegidos", value=str(len(protected)), inline=True)
     embed.add_field(name="Prio final", value=str(len(rows)), inline=True)
-    embed.add_field(name="Tienen rol ahora", value=str(len(current_role_members)), inline=True)
-    embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
-    embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
+    if source_data["source"] == "actual":
+        embed.add_field(name="Tienen rol ahora", value=str(len(current_role_members)), inline=True)
+        embed.add_field(name="Se agregarian", value=str(count_priority_additions(guild, role, rows)), inline=True)
+        embed.add_field(name="Se quitarian", value=str(len(removable)), inline=True)
+    else:
+        embed.add_field(
+            name="Modo",
+            value="Consulta del cierre: no modifica roles ni corte.",
+            inline=False,
+        )
     embed.add_field(
         name="Vista previa",
         value="\n".join(preview) if preview else "Nadie alcanza el corte y no hay Staff/GM visibles.",
@@ -5710,7 +5772,11 @@ def build_priority_dashboard_embed(guild: discord.Guild, role: discord.Role, min
             value="Aun no hay cierres semanales archivados en la base.",
             inline=False,
         )
-    embed.set_footer(text="Exporta primero si quieres revisar la lista completa antes de aplicar.")
+    embed.set_footer(text=(
+        "Exporta primero si quieres revisar la lista completa antes de aplicar."
+        if source_data["source"] == "actual"
+        else "Consulta histórica: usa CSV para revisar la lista completa."
+    ))
     return embed
 
 
@@ -6036,6 +6102,10 @@ class PrioDashboardView(SafeView):
         super().__init__(timeout=600)
         self.minimo = max(0, int(DEFAULT_PRIORITY_MIN_POINTS if minimo is None else minimo))
         self.source = normalize_priority_source(source)
+        if self.source == "ultimo_cierre":
+            for item in list(self.children):
+                if item.label in {"Corte", "Aplicar"}:
+                    self.remove_item(item)
 
     @discord.ui.button(
         label="Actualizar",
