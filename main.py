@@ -5814,6 +5814,24 @@ def build_priority_csv_file(minimo: int, guild: discord.Guild | None = None, sou
     return discord.File(fp=io.BytesIO(output.getvalue().encode("utf-8")), filename=filename)
 
 
+def build_priority_xlsx_file(minimo: int, guild: discord.Guild | None = None, source: str = "actual"):
+    source_data = get_priority_source(source)
+    protected_members = get_priority_protected_members(guild) if guild else []
+    rows = [
+        ["Fuente", source_data["label"]],
+        ["Corte", f"{minimo} puntos o mas"],
+        [],
+        ["user_id", "username", "total_puntos", "estado_prio", "detalle", "motivo"],
+    ]
+    for item in build_priority_export_rows(minimo, protected_members, source_data["rows"]):
+        rows.append([
+            item["user_id"], item["username"], item["points"], item["estado"],
+            item["detalle"], item["motivo"],
+        ])
+    filename = f"prio_{source_data['source']}_corte_{minimo}.xlsx"
+    return discord.File(fp=io.BytesIO(build_xlsx_bytes(rows)), filename=filename)
+
+
 def build_priority_export_rows(minimo: int, protected_members: list[discord.Member] | None = None, ranking_rows=None):
     rows = []
     seen = set()
@@ -6090,6 +6108,52 @@ def build_priority_public_post(minimo: int, role: discord.Role, result: dict, pa
     return content_chunks, embed, winners
 
 
+class PriorityExportView(SafeView):
+    def __init__(self, minimo: int, source: str):
+        super().__init__(timeout=300)
+        self.minimo = max(0, int(minimo))
+        self.source = normalize_priority_source(source)
+
+    async def send_file(self, interaction: discord.Interaction, file_format: str):
+        if not is_gm_member(interaction.user):
+            await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
+            return
+        if not interaction.guild:
+            await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
+            return
+        source_data = get_priority_source(self.source)
+        if self.source == "ultimo_cierre" and not source_data["snapshot"]:
+            await interaction.response.send_message("Aun no existe un cierre semanal.", ephemeral=True)
+            return
+        file = (
+            build_priority_csv_file(self.minimo, interaction.guild, self.source)
+            if file_format == "csv"
+            else build_priority_xlsx_file(self.minimo, interaction.guild, self.source)
+        )
+        record_interaction_audit(
+            interaction,
+            "exportaciones",
+            "prio",
+            target_type="archivo",
+            target_id=file.filename,
+            summary=f"Exporto prio en formato {file_format.upper()} con corte {self.minimo}.",
+            details={"fuente": self.source, "formato": file_format, "corte": self.minimo},
+        )
+        await interaction.response.send_message(
+            content=f"{text_emoji('EXPORT')} **{source_data['label']}**",
+            file=file,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="XLSX", emoji=button_emoji("EXPORT"), style=discord.ButtonStyle.primary)
+    async def xlsx(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_file(interaction, "xlsx")
+
+    @discord.ui.button(label="CSV", emoji=button_emoji("EXPORT"), style=discord.ButtonStyle.secondary)
+    async def csv(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_file(interaction, "csv")
+
+
 class PrioDashboardView(SafeView):
     def __init__(self, minimo: int = DEFAULT_PRIORITY_MIN_POINTS, source: str = "actual"):
         super().__init__(timeout=600)
@@ -6126,47 +6190,26 @@ class PrioDashboardView(SafeView):
         await interaction.response.send_modal(PrioCutoffModal(self.minimo, self.source))
 
     @discord.ui.button(
-        label="CSV",
+        label="Exportar",
         emoji=button_emoji("EXPORT"),
         style=discord.ButtonStyle.secondary,
     )
-    async def export_csv(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def export(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_gm_member(interaction.user):
             await interaction.response.send_message("Requiere jerarquia GM / Lider.", ephemeral=True)
             return
         if not interaction.guild:
             await interaction.response.send_message("Este boton solo funciona dentro del servidor.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        source_data = get_priority_source(self.source)
-        candidates = build_priority_candidates(self.minimo, source_data["rows"])
-        protected = get_priority_protected_members(interaction.guild)
-        embed = build_priority_decision_embed(
-            self.minimo,
-            candidates,
-            protected,
-            source_data["label"],
-            source_data["rows"],
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"{text_emoji('EXPORT')} Exportar Prio",
+                description="Elige el formato del listado mostrado.",
+                color=COLOR_PANEL,
+            ),
+            view=PriorityExportView(self.minimo, self.source),
+            ephemeral=True,
         )
-        file = build_priority_csv_file(self.minimo, interaction.guild, self.source)
-        record_interaction_audit(
-            interaction,
-            "exportaciones",
-            "prio_csv",
-            target_type="archivo",
-            target_id="prio_semanal.csv",
-            summary=f"Exporto la decision de prio con corte {self.minimo}.",
-            details={"fuente": self.source, "corte": self.minimo},
-        )
-        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
-
-    @discord.ui.button(
-        label="Requisito",
-        emoji=button_emoji("POINTS"),
-        style=discord.ButtonStyle.secondary,
-    )
-    async def caps(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=build_priority_requirement_embed(), ephemeral=True)
 
     @discord.ui.button(
         label="Aplicar",

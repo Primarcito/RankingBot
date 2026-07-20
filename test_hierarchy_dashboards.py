@@ -131,6 +131,9 @@ class HierarchyDashboardTests(unittest.TestCase):
         closure_labels = [item.label for item in main.PrioDashboardView(source="ultimo_cierre").children]
         self.assertIn("Aplicar", closure_labels)
         self.assertIn("Corte", closure_labels)
+        self.assertIn("Exportar", closure_labels)
+        self.assertNotIn("Requisito", closure_labels)
+        self.assertEqual([item.label for item in main.PriorityExportView(90, "actual").children], ["XLSX", "CSV"])
 
     def test_general_ranking_entry_keeps_pagination_controls(self):
         source = inspect.getsource(views.DashboardView.ranking)
