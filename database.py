@@ -791,12 +791,15 @@ def get_scouteo_projection(
     scope = _scouteo_scope(target_snapshot_id)
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT minutes, maps FROM scouteo_balances WHERE scope=? AND user_id=?",
+            "SELECT minutes FROM scouteo_balances WHERE scope=? AND user_id=?",
             (scope, str(user_id)),
         ).fetchone()
-    previous_minutes, previous_maps = row or (0, 0)
+    previous_minutes = (row or (0,))[0]
     total_minutes = max(0, int(previous_minutes or 0) + int(minutes or 0))
-    total_maps = max(0, int(previous_maps or 0) + int(maps or 0))
+    # Los mapas se califican por resumen diario. Nunca se arrastran al día
+    # siguiente: 3 mapas de ayer y 9 de hoy son 9, no 12. Solo los minutos
+    # que no completaron un bloque de horas permanecen como saldo.
+    total_maps = max(0, int(maps or 0))
     minutes_per_unit = max(1, int(hours_required)) * 60
     maps_per_unit = max(1, int(maps_per_unit))
     hour_units = total_minutes // minutes_per_unit
@@ -804,7 +807,7 @@ def get_scouteo_projection(
     units = hour_units + map_units
     return {
         "previous_minutes": int(previous_minutes or 0),
-        "previous_maps": int(previous_maps or 0),
+        "previous_maps": 0,
         "total_minutes": total_minutes,
         "total_maps": total_maps,
         "eligible": units > 0,
@@ -812,7 +815,7 @@ def get_scouteo_projection(
         "map_units": map_units,
         "units": units,
         "remaining_minutes": total_minutes - (hour_units * minutes_per_unit),
-        "remaining_maps": total_maps - (map_units * maps_per_unit),
+        "remaining_maps": 0,
     }
 
 def set_scouteo_contributions(message_id: str, contributions):
@@ -930,18 +933,18 @@ def _apply_scouteo_contributions(conn, message_id: str, target_snapshot_id, poin
     calculated = {}
     for user_id, minutes, maps, hours_required, maps_per_unit, multiplier in rows:
         balance = conn.execute(
-            "SELECT minutes, maps FROM scouteo_balances WHERE scope=? AND user_id=?",
+            "SELECT minutes FROM scouteo_balances WHERE scope=? AND user_id=?",
             (scope, str(user_id)),
-        ).fetchone() or (0, 0)
+        ).fetchone() or (0,)
         total_minutes = max(0, int(balance[0] or 0) + int(minutes or 0))
-        total_maps = max(0, int(balance[1] or 0) + int(maps or 0))
+        total_maps = max(0, int(maps or 0))
         minutes_per_unit = max(1, int(hours_required)) * 60
         maps_per_unit = max(1, int(maps_per_unit))
         hour_units = total_minutes // minutes_per_unit
         map_units = total_maps // maps_per_unit
         units = hour_units + map_units
         remaining_minutes = total_minutes - hour_units * minutes_per_unit
-        remaining_maps = total_maps - map_units * maps_per_unit
+        remaining_maps = 0
         exact_points = (
             units * max(0, int(points_per_unit)) * int(multiplier) + 50
         ) // 100

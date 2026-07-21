@@ -67,7 +67,7 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
         self.assertEqual(snapshot_scout[5], 6)
         self.assertEqual(snapshot_scout[7], 29)
 
-    def test_hours_and_maps_accumulate_across_approved_daily_summaries(self):
+    def test_only_hours_accumulate_across_approved_daily_summaries(self):
         self.database.create_evidence_review(
             "day-1", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]
         )
@@ -77,20 +77,33 @@ class ScouteoPointsPersistenceTests(unittest.TestCase):
 
         projection = self.database.get_scouteo_projection("1", 120, 2, 4, 3)
         self.assertEqual(projection["total_minutes"], 240)
-        self.assertEqual(projection["total_maps"], 3)
+        self.assertEqual(projection["total_maps"], 2)
         self.assertEqual(projection["hour_units"], 1)
-        self.assertEqual(projection["map_units"], 1)
-        self.assertEqual(projection["units"], 2)
+        self.assertEqual(projection["map_units"], 0)
+        self.assertEqual(projection["units"], 1)
 
         self.database.create_evidence_review(
             "day-2", "1", "Scout", "scouteo", [("1", "Scout", 2, 10)]
         )
         self.database.set_scouteo_contributions("day-2", [("1", 120, 2, 4, 3, 100)])
         self.database.approve_evidence("day-2")
-        self.assertEqual(self.database.get_scout("1")[5], 2)
-        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 10)
+        self.assertEqual(self.database.get_scout("1")[5], 1)
+        self.assertEqual(self.database.calc_puntos_totales(self.database.get_scout("1")), 5)
         self.assertEqual(self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_minutes"], 0)
         self.assertEqual(self.database.get_scouteo_projection("1", 0, 0, 4, 3)["total_maps"], 0)
+
+    def test_maps_from_the_previous_summary_never_inflate_current_maps(self):
+        self.database.create_evidence_review(
+            "maps-day-1", "1", "Scout", "scouteo", [("1", "Scout", 0, 0)]
+        )
+        self.database.set_scouteo_contributions("maps-day-1", [("1", 180, 3, 4, 3, 100)])
+        self.database.approve_evidence("maps-day-1")
+
+        projection = self.database.get_scouteo_projection("1", 60, 9, 4, 3)
+        self.assertEqual(projection["total_minutes"], 240)
+        self.assertEqual(projection["total_maps"], 9)
+        self.assertEqual(projection["hour_units"], 1)
+        self.assertEqual(projection["map_units"], 3)
 
     def test_four_hours_award_one_unit_even_with_one_map(self):
         self.database.create_evidence_review(
