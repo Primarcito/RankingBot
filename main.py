@@ -770,7 +770,7 @@ SCOUTEO_MAPS_PER_POINT = 3
 SCOUTEO_HOURS_SETTING_KEY = "scouteo_count_hours_per_point"
 SCOUTEO_MAPS_SETTING_KEY = "scouteo_count_maps_per_point"
 SCOUTEO_DASHBOARD_STATE_PREFIX = "scouteo_count_dashboard:"
-SCOUTEO_ACCUMULATION_MIGRATION_KEY = "scouteo_accumulation_v1"
+SCOUTEO_ACCUMULATION_MIGRATION_KEY = "scouteo_accumulation_v2"
 
 def migrate_scouteo_accumulation_settings():
     if get_bot_state(SCOUTEO_ACCUMULATION_MIGRATION_KEY):
